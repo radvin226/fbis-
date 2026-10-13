@@ -1,0 +1,12 @@
+spluslib[all]
+livekit
+pyaes
+rsa
+pysocks
+aiohttp
+jdatetime
+yt-dlp
+googlesearch-tool
+requests
+selenium
+huggingface_hub
