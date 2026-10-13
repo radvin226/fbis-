@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.log
+/data/
+/sessions/
+/temp/
+/downloads/
+*.sqlite3
+.env
+
+hf_token.txt
+
+# Official cloudflared executable downloaded at runtime (verified SHA-256)
+.runtime/

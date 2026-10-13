@@ -1,0 +1,33 @@
+2026-10-13 17:22:26,136 | INFO    | spluslib._base.spluslib._base.network.mtprotosender | Connecting to im-server.splus.ir:443/WebSocket...
+2026-10-13 17:22:26,823 | INFO    | spluslib._base.spluslib._base.network.mtprotosender | Connection to im-server.splus.ir:443/WebSocket complete!
+2026-10-13 17:22:27,071 | WARNING | spluslib._base.spluslib._base.network.mtprotosender | RPC error for msg 7696149951678519204: The key is not registered in the system (caused by GetStateRequest) (request=GetStateRequest)
+2026-10-13 17:22:52,262 | INFO    | fbi | SplusLib version: 3.0.1
+2026-10-13 17:22:52,263 | INFO    | fbi | وارد حساب شدیم: FBI BOT (62989530)
+2026-10-13 17:22:52,263 | INFO    | fbi | SUDOS: 2 شناسه
+2026-10-13 17:22:52,265 | INFO    | fbi.webpanel | Web panel listening on 0.0.0.0:8080 (base URL: 10.175.1.240)
+2026-10-13 17:22:52,265 | INFO    | fbi | DB mute boot repair: 0 permissions re-applied in 0 groups
+2026-10-13 17:23:09,723 | WARNING | spluslib._base.spluslib._base.network.mtprotosender | RPC error for msg 7696150125117395092: The maximum number of users has been exceeded (to create a chat, for example) (caused by EditAdminRequest) (request=EditAdminRequest)
+2026-10-13 17:23:10,469 | INFO    | fbi | SUDO full-admin ensured chat=-1000023972661 user=56597421
+2026-10-13 17:24:16,195 | WARNING | spluslib._base.spluslib._base.network.mtprotosender | RPC error for msg 7696150420779593436: The maximum number of users has been exceeded (to create a chat, for example) (caused by EditAdminRequest) (request=EditAdminRequest)
+2026-10-13 17:24:16,313 | INFO    | fbi | SUDO full-admin ensured chat=-1000023972661 user=56597421
+2026-10-13 17:24:23,835 | INFO    | fbi | SUDO full-admin ensured chat=-1000024311028 user=69871358
+2026-10-13 17:24:23,915 | WARNING | spluslib._base.spluslib._base.network.mtprotosender | RPC error for msg 7696150453642526012: Chat admin privileges are required to do that in the specified chat (for example, to send a message in a channel which is not yours), or invalid permissions used for the channel or group (caused by EditAdminRequest) (request=EditAdminRequest)
+2026-10-13 17:24:24,153 | INFO    | fbi.api | raw role scan chat=-1000024311028 participants=3 owner=56597421 admins=3
+2026-10-13 17:24:24,369 | INFO    | fbi.api | role snapshot chat=-1000024311028 owner=56597421 admins=3 verified=3
+2026-10-13 17:24:24,369 | INFO    | fbi.api | snapshot role chat=-1000024311028 user=62989530 owner=False admin=True source=admin-scan
+2026-10-13 17:24:24,369 | INFO    | fbi.api | admin final chat=-1000024311028 user=62989530 fresh=True => True
+2026-10-13 17:24:24,505 | INFO    | fbi.api | raw role scan chat=-1000024311028 participants=3 owner=56597421 admins=3
+2026-10-13 17:24:24,548 | INFO    | fbi.api | role snapshot chat=-1000024311028 owner=56597421 admins=3 verified=3
+2026-10-13 17:24:48,710 | INFO    | fbi.api | raw role scan chat=-1000024311028 participants=3 owner=56597421 admins=3
+2026-10-13 17:24:48,810 | INFO    | fbi.api | role snapshot chat=-1000024311028 owner=56597421 admins=3 verified=3
+2026-10-13 17:24:48,994 | INFO    | fbi.api | raw role scan chat=-1000024311028 participants=3 owner=56597421 admins=3
+2026-10-13 17:24:49,163 | INFO    | fbi.api | role snapshot chat=-1000024311028 owner=56597421 admins=3 verified=3
+2026-10-13 17:25:27,207 | WARNING | spluslib._base.spluslib._base.network.mtprotosender | RPC error for msg 7696150725445982464: The maximum number of users has been exceeded (to create a chat, for example) (caused by EditAdminRequest) (request=EditAdminRequest)
+2026-10-13 17:25:28,678 | INFO    | fbi | SUDO full-admin ensured chat=-1000023972661 user=56597421
+2026-10-13 17:29:39,792 | WARNING | spluslib._base.spluslib._base.network.mtprotosender | RPC error for msg 7696151810299618344: The maximum number of users has been exceeded (to create a chat, for example) (caused by EditAdminRequest) (request=EditAdminRequest)
+2026-10-13 17:29:39,897 | INFO    | fbi | SUDO full-admin ensured chat=-1000023972661 user=56597421
+2026-10-13 17:31:28,434 | INFO    | spluslib._base.spluslib._base.network.mtprotosender | Disconnecting from im-server.splus.ir:443/WebSocket...
+2026-10-13 17:31:28,438 | INFO    | spluslib._base.spluslib._base.network.mtprotosender | Disconnection from im-server.splus.ir:443/WebSocket complete!
+2026-10-13 17:31:28,447 | INFO    | spluslib._base.spluslib._base.network.mtprotosender | Not disconnecting (already have no connection)
+2026-10-13 17:31:28,492 | ERROR   | asyncio | Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x00000000212EDFD0>
