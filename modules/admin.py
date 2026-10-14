@@ -7,7 +7,7 @@ import time
 
 import config
 from core import api as api_mod
-from core import ranks, utils
+from core import msgstyle, ranks, utils
 from core.db import db
 
 ACTIVATE_WORDS = ("فعال", "فعالسازی", "روشن شو", "activate")
@@ -165,7 +165,11 @@ async def activate(ctx, *, explicit=False) -> bool:
         "",
         "📖 برای دیدن تمام دستورات «راهنما» را بفرستید.",
     ]
-    await ctx.reply("\n".join(lines), reply=False)
+    if msgstyle.is_card(ctx.g):
+        text = msgstyle.card("FBI — فعال‌سازی موفق ✅", "\n".join(lines[2:]), "🕵️")
+    else:
+        text = "\n".join(lines)
+    await ctx.reply(text, reply=False)
     return True
 
 

@@ -80,7 +80,7 @@ HF_MEMORY_MESSAGES = int(os.getenv("FBI_HF_MEMORY_MESSAGES", "8"))
 # ========================= برند =========================
 BOT_NAME = "FBI SPLUS"
 MAKER = "رادوین"
-VERSION = "4.7.43-CLEAN"
+VERSION = "4.7.44-STYLE"
 
 # شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید.
 # شناسه‌های قدیمی Rubika (مثل u...) در این نسخه معتبر نیستند.

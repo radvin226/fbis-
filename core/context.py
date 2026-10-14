@@ -7,7 +7,7 @@ import logging
 from types import SimpleNamespace
 
 from core import api as api_mod
-from core import ranks, utils
+from core import msgstyle, ranks, utils
 from core.db import db
 
 log = logging.getLogger("fbi.ctx")
@@ -455,10 +455,10 @@ class Ctx:
         return await self.api.send(self.guid, body, reply_to=self.message_id if reply and self.message_id else None)
 
     async def ok(self, text, mention=None):
-        return await self.reply("✅ " + str(text), mention=mention)
+        return await self.reply(msgstyle.status(self.g, "ok", text), mention=mention)
 
     async def err(self, text):
-        return await self.reply("❌ " + str(text))
+        return await self.reply(msgstyle.status(self.g, "err", text))
 
     async def _auto_delete(self, ids, delay):
         try:

@@ -611,6 +611,57 @@ class API:
             reply_to=reply_to,
         )
 
+    @staticmethod
+    def _tl_entity_class(name):
+        """Find a Telegram-style entity class in the vendored SplusLib layer."""
+        try:
+            from spluslib._base.tl import types as tl_types
+            cls = getattr(tl_types, name, None)
+            if cls is not None:
+                return cls
+        except Exception:
+            pass
+        try:
+            from spluslib._base import types as base_types
+            return getattr(base_types, name, None)
+        except Exception:
+            return None
+
+    async def send_quote(self, guid, body, header=None, reply_to=None):
+        """Send ``body`` as a native blockquote under an optional plain header.
+
+        The header is plain text and the quoted body carries a blockquote
+        entity. When the installed layer has no blockquote entity, the body is
+        sent behind a bar prefix instead so it still reads as a quote.
+        """
+        content = str(body)
+        head = (str(header).strip() + "\n") if header else ""
+        text = head + content
+        entity_cls = self._tl_entity_class("MessageEntityBlockquote")
+        raw = getattr(self.client, "_client", None)
+        raw_send = getattr(raw, "send_message", None) if raw is not None else None
+        if entity_cls is not None and callable(raw_send):
+            try:
+                entity = entity_cls(
+                    offset=self._utf16_len(head),
+                    length=self._utf16_len(content),
+                )
+                kwargs = {
+                    "formatting_entities": [entity],
+                    "parse_mode": None,
+                    "link_preview": False,
+                }
+                if reply_to is not None:
+                    kwargs["reply_to"] = _as_int(reply_to, reply_to)
+                return await raw_send(self._chat_arg(guid), text, **kwargs)
+            except Exception as exc:
+                log.debug("native quote failed: %s", exc)
+        barred = "\n".join("┃ " + line for line in (content.splitlines() or [""]))
+        return await self.send(
+            guid, head + barred, reply_to=reply_to,
+            parse_mode=None, link_preview=False,
+        )
+
     async def send(self, guid, text, reply_to=None, **kwargs):
         kwargs = dict(kwargs)
         buttons = kwargs.pop("buttons", None)

@@ -14,11 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from core import api as api_mod
-from core import ranks, splash, utils, subscription
+from core import msgstyle, ranks, splash, utils, subscription
 from core.api import API
 from core.context import Ctx, make_update
 from core.db import db
-from modules import admin, fun, group_tools, lists, locks, media, misc, stats, timers, v2_features, sassy_ai, guide, reports, advanced
+from modules import admin, beauty, fun, group_tools, lists, locks, media, misc, stats, timers, v2_features, sassy_ai, guide, reports, advanced
 import webpanel
 
 try:
@@ -40,7 +40,7 @@ log = logging.getLogger("fbi")
 app = SplusClient(config.SESSION_NAME, device_model=config.DEVICE_MODEL)
 api = API(app)
 ME = {"guid": None, "name": config.BOT_NAME}
-MODULES = (reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, sassy_ai, advanced, misc)
+MODULES = (beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, sassy_ai, advanced, misc)
 _ADMIN_SYNC = {}
 _ADMIN_SYNC_TTL = 15.0
 _SUDO_PROMOTE_CACHE = {}
@@ -564,13 +564,14 @@ async def on_chat_action(event):
             )
             body = (g.get("welcome_text") or default_welcome)
             body = body.replace("{name}", name).replace("{group}", str(title)).replace("{join_date}", join_date)
-            await api.send(chat_id, body)
+            await api.send(chat_id, msgstyle.block(g, "📢 خوش‌آمدگویی", body, plain_title=False))
     if target and _event_is_leave(event):
         db.bump(chat_id, target, "left")
         if g.get("goodbye"):
             temp = fake if 'fake' in locals() else Ctx(app, api, SimpleNamespace(object_guid=chat_id, author_guid=target, message_id="", text="", is_group=True, is_private=False, is_channel=False), ME["guid"])
             name = await temp.target_link(target)
-            await api.send(chat_id, (g.get("goodbye_text") or "{name} از گروه رفت. به امید دیدار 🍃").replace("{name}", name))
+            body = (g.get("goodbye_text") or "{name} از گروه رفت. به امید دیدار 🍃").replace("{name}", name)
+            await api.send(chat_id, msgstyle.block(g, "👋 خداحافظی", body, plain_title=False))
     db.save(("groups", "stats"))
 
 
@@ -1073,6 +1074,9 @@ async def handle_private(ctx):
         if await webpanel.handle_private(ctx):
             return
 
+    # نقل قول و اسپویلر در PV هم کار می‌کنند؛ بقیهٔ پاسخ‌های PV زیر همین بخش است.
+    if await beauty.handle_private(ctx):
+        return
     user_name = await ctx.sender_name()
     links = utils.extract_join_links(ctx.raw_text)
     if config.AUTO_JOIN_PV_LINKS and links:
@@ -1083,12 +1087,19 @@ async def handle_private(ctx):
                 results.append((link, True))
             except Exception:
                 results.append((link, False))
-        lines = [PV_HEADER, f"👤 {user_name}", "", "🔗 لینک دریافت شد."]
+        lines = [f"👤 {user_name}", "", "🔗 لینک دریافت شد."]
         lines.extend(("✅ جوین شد" if ok else "❌ جوین نشد") + f" — `{link}`" for link, ok in results)
-        lines += ["", "لینک دعوت Splus را همینجا بفرستید.", PV_FOOTER]
-        await ctx.reply("\n".join(lines))
+        lines += ["", "لینک دعوت Splus را همینجا بفرستید."]
+        await ctx.reply(msgstyle.card("FBI SPLUS", "\n".join(lines), "🕵️"))
         return
-    await ctx.reply("\n".join([PV_HEADER, f"👤 {user_name}", "", "درود 🌹", "من FBI هستم.", "لینک دعوت گروه را بفرستید تا در صورت معتبر بودن جوین شوم.", "برای فعال‌سازی، FBI را ادمین کامل گروه کنید و «فعال» را بفرستید.", PV_FOOTER]))
+    await ctx.reply(msgstyle.card("FBI SPLUS", "\n".join([
+        f"👤 {user_name}",
+        "",
+        "درود 🌹",
+        "من FBI هستم.",
+        "لینک دعوت گروه را بفرستید تا در صورت معتبر بودن جوین شوم.",
+        "برای فعال‌سازی، FBI را ادمین کامل گروه کنید و «فعال» را بفرستید.",
+    ]), "🕵️"))
 
 
 async def auto_activate_once():
