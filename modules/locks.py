@@ -321,7 +321,7 @@ async def punish(ctx, lock_key):
     name = await ctx.target_link(ctx.author)
     # سقف اخطار می‌تواند برای هر قفل جداگانه تنظیم شود؛ در غیر این صورت
     # سقف عمومی گروه استفاده می‌شود.
-    maximum = int(g.get("lock_max_warn", {}).get(lock_key) or g.get("max_warn") or 5)
+    maximum = int(g.get("lock_max_warn", {}).get(lock_key) or g.get("max_warn") or 3)
 
     if ban_on and count >= maximum:
         # وقتی کاربر به‌علت کیل/قفل حذف می‌شود، سابقه کیل او نباید باعث
@@ -372,7 +372,7 @@ async def handle(ctx) -> bool:
             state = "🔴 قفل" if g["locks"].get(key) else "🟢 باز"
             warn = "بله" if g.get("lock_warn", {}).get(key, True) else "خیر"
             ban = "بله" if g.get("lock_ban", {}).get(key, True) else "خیر"
-            limit = g.get("lock_max_warn", {}).get(key) or g.get("max_warn", 5)
+            limit = g.get("lock_max_warn", {}).get(key) or g.get("max_warn", 3)
             lines.append(f"• {title}: {state} | اخطار: {warn} | بن: {ban} | سقف: {utils.fa_digits(limit)}")
         lines.append(f"\n⚠️ حداکثر اخطار: {utils.fa_digits(g.get('max_warn', 5))}")
         await ctx.reply("\n".join(lines))

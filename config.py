@@ -214,7 +214,7 @@ DEFAULT_SETTINGS = {
     },
     "lock_warn": {},
     "lock_ban": {},
-    "max_warn": 5,
+    "max_warn": 3,
     "lock_max_warn": {},
     "spam_level": 2,
     "max_file_mb": DEFAULT_MAX_FILE_MB,

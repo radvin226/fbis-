@@ -515,7 +515,7 @@ async def on_chat_action(event):
     try:
         current_bot_admin = await api.is_admin(chat_id, ME["guid"], fresh=True)
         g["_bot_admin"] = bool(current_bot_admin)
-        if current_bot_admin and not g.get("active") and not g.get("manual_disabled"):
+        if current_bot_admin and not g.get("active"):
             fake = Ctx(app, api, SimpleNamespace(object_guid=chat_id, author_guid=ME["guid"], message_id="", text="", is_group=True, is_private=False, is_channel=False), ME["guid"])
             fake.rank = ranks.BOT
             await admin.activate(fake)

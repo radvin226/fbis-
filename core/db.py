@@ -181,6 +181,19 @@ class DB:
                 if key not in groups[guid]:
                     groups[guid][key] = copy.deepcopy(value)
                     changed = True
+            # Requested FBI defaults: these moderation locks and metadata lock are on by default.
+            # Apply only the four named lock defaults to existing group records as well.
+            group_locks = groups[guid].setdefault("locks", {})
+            for lock_key in ("link", "forward", "username", "hyperlink"):
+                if group_locks.get(lock_key) is not True:
+                    group_locks[lock_key] = True
+                    changed = True
+            if groups[guid].get("bio_link_mute") is not True:
+                groups[guid]["bio_link_mute"] = True
+                changed = True
+            if groups[guid].get("max_warn") != 3:
+                groups[guid]["max_warn"] = 3
+                changed = True
             # nested voice/music state migration
             for key in ("locks", "music_state", "voice_state"):
                 base = config.DEFAULT_SETTINGS.get(key, {})
