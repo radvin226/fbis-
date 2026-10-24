@@ -601,6 +601,7 @@ OWNER_HELP = """```text
 • لیست ادمین / لیست ویژه / مقامم
 • زیرپرچم من / لغو زیرپرچم
 • فعال سازی سراسری
+• اطلاع رسانی شامل «فعال» = فعال سازی سراسری
 
 سازنده FBI:
 • `56597421`
@@ -965,37 +966,66 @@ async def _owner_announcement(ctx):
 
 
 _FORCE_JOIN_CACHE = {}
+FORCE_JOIN_TEXT = (
+    "باسلام لطفا برای دریافت اطلاعات و دریافت بات اختصاصی رایگان باید عضو گروه های زیر باشید\n"
+    "گروه حل مشکلات؛ https://splus.ir/Fbibotgrup\n"
+    f"پشتیبانی:{config.FORCE_JOIN_SUPPORT}\n"
+    "اطلاع رسانی: https://splus.ir/FBIbotdd\n\n"
+    "بعد از عضو شدن، بنویسید: عضو شدم"
+)
+
+
+def _force_join_text(missing=()):
+    text = FORCE_JOIN_TEXT
+    if missing:
+        text += "\n\n❌ هنوز عضو این‌ها نشده‌اید: " + "، ".join(missing)
+    return text
+
+
+async def _missing_force_join(uid, *, fresh=True):
+    """برچسب مواردی که کاربر در آن‌ها عضو نیست. هر مورد با یکی از مرجع‌هایش بررسی می‌شود."""
+    missing = []
+    for target in config.FORCE_JOIN_TARGETS:
+        found = False
+        for ref in target["refs"]:
+            try:
+                if await api.is_channel_member(ref, uid, fresh=fresh):
+                    found = True
+                    break
+            except Exception as exc:
+                log.debug("force join check failed ref=%s user=%s: %r", ref, uid, exc)
+        if not found:
+            missing.append(target["label"])
+    return missing
+
 
 async def force_join_ok(ctx):
+    """کاربر عادی در PV تا عضو همهٔ موارد اجباری نشده، پیامش پردازش نمی‌شود."""
     if not getattr(config, "FORCE_JOIN_ENABLED", False) or _private_owner(ctx.author):
         return True
     uid = str(ctx.author or "")
     if not uid:
         return False
+    if utils.compact(ctx.text) == utils.compact("عضو شدم"):
+        missing = await _missing_force_join(uid, fresh=True)
+        _FORCE_JOIN_CACHE.pop(uid, None)
+        if missing:
+            await ctx.reply(_force_join_text(missing), reply=False)
+        else:
+            await ctx.reply("✅ عضویت شما تأیید شد. حالا می‌توانید از FBI استفاده کنید.", reply=False)
+        return False
     now = time.monotonic()
     cached = _FORCE_JOIN_CACHE.get(uid)
     ttl = max(0.0, float(getattr(config, "FORCE_JOIN_CACHE_SECONDS", 5)))
     if cached and now - float(cached.get("t") or 0) < ttl:
-        return bool(cached.get("ok"))
-    ok = False
-    try:
-        ok = await api.is_channel_member(config.FORCE_JOIN_CHANNEL_ID, uid, fresh=True)
-        if not ok:
-            # fallback to the public channel username when the numeric channel
-            # reference cannot be resolved correctly by a particular Splus build.
-            ok = await api.is_channel_member("@FBIbotdd", uid, fresh=True)
-    except Exception as exc:
-        log.debug("force join check failed user=%s: %r", uid, exc)
-    _FORCE_JOIN_CACHE[uid] = {"t": now, "ok": bool(ok)}
-    if not ok:
-        await ctx.reply(
-            "🔒 دسترسی شما به FBI هنوز فعال نشده است.\n\n"
-            "👥 برای استفاده از ربات ابتدا در کانال زیر عضو شوید.\n"
-            f"🔗 [عضویت در کانال FBI]({config.FORCE_JOIN_CHANNEL_LINK})\n\n"
-            "✅ بعد از عضویت، دوباره پیام یا لینک خود را بفرستید.\n"
-            "❌ اگر عضو نباشید، ربات پاسخ شما را پردازش نمی‌کند."
-        )
-    return bool(ok)
+        missing = cached.get("missing") or []
+    else:
+        missing = await _missing_force_join(uid, fresh=True)
+        _FORCE_JOIN_CACHE[uid] = {"t": now, "missing": missing}
+    if not missing:
+        return True
+    await ctx.reply(_force_join_text(missing), reply=False)
+    return False
 
 
 async def handle_private(ctx):
@@ -1003,6 +1033,10 @@ async def handle_private(ctx):
         return
     if _private_owner(ctx.author):
         if await _owner_ad_flow(ctx):
+            return
+        announced = _activation_announcement(ctx.raw_text)
+        if announced:
+            await owner_global_activate(ctx, body=announced)
             return
         if await _owner_announcement(ctx):
             return
@@ -1233,42 +1267,66 @@ def _on_bot_left(chat_id, g):
     db.save("groups")
 
 
-async def owner_global_activate(ctx):
-    """PV سازنده، «فعال سازی سراسری»: در هر گروه غیرفعالی که FBI در آن ادمین است،
-    خود FBI پیام «فعال» می‌فرستد و همان پیام را به‌عنوان دستور فعال‌سازی اجرا می‌کند."""
-    activated = already = skipped = failed = 0
+_ACTIVATE_TOKEN = re.compile(r"(?<!\w)فعال(?!\w)")
+
+
+def _activation_announcement(raw):
+    """اگر PV سازنده «اطلاع رسانی [متن]» بفرستد و متن کلمهٔ «فعال» داشته باشد، همان متن را برمی‌گرداند."""
+    m = re.fullmatch(r"اطلاع[\u200c\s]?رسانی\s+(.+)", (raw or "").strip(), re.S)
+    if not m:
+        return None
+    body = m.group(1).strip()
+    return body if _ACTIVATE_TOKEN.search(utils.normalize(body)) else None
+
+
+async def owner_global_activate(ctx, body="فعال"):
+    """اطلاع‌رسانی سراسری با کلمهٔ «فعال».
+
+    متن به همهٔ گروه‌هایی می‌رود که FBI در آن ادمین است (حتی غیرفعال‌ها). در هر گروهِ غیرفعال،
+    خودِ FBI با همان پیام اطلاع‌رسانی فعال می‌شود، بدون پیام جدا و بدون کارت فعال‌سازی، و می‌نویسد «من فعالم».
+    """
+    body = str(body or "فعال").strip()
+    text = "📢 اطلاع‌رسانی FBI\n\n" + body
+    stats = {"sent": 0, "activated": 0, "already": 0, "not_admin": 0, "no_sub": 0, "failed": 0}
     for guid in await _known_group_guids():
         g = db.group(guid)
-        if g.get("active") and not g.get("manual_disabled"):
-            already += 1
-            continue
         if not subscription.allowed(guid):
-            skipped += 1
+            stats["no_sub"] += 1
             continue
         try:
             if not await api.is_admin(guid, ME["guid"], fresh=True):
-                skipped += 1
+                stats["not_admin"] += 1
                 continue
-            sent = await api.send(guid, "فعال")
-            trigger = SimpleNamespace(
-                object_guid=guid, author_guid=ME["guid"], message_id=str(api.result_message_id(sent) or ""),
-                text="فعال", is_group=True, is_private=False, is_channel=False,
-            )
-            fake = Ctx(app, api, trigger, ME["guid"])
-            fake.rank = ranks.BOT
-            if await admin.activate(fake, explicit=True, trusted=True):
-                activated += 1
+            sent = await api.send(guid, text)
+            mid = api.result_message_id(sent)
+            stats["sent"] += 1
+            if g.get("active") and not g.get("manual_disabled"):
+                stats["already"] += 1
             else:
-                failed += 1
+                trigger = SimpleNamespace(
+                    object_guid=guid, author_guid=ME["guid"], message_id=str(mid or ""),
+                    text=body, is_group=True, is_private=False, is_channel=False,
+                )
+                fake = Ctx(app, api, trigger, ME["guid"])
+                fake.rank = ranks.BOT
+                if not await admin.activate(fake, silent=True):
+                    stats["failed"] += 1
+                    log.info("global activation refused chat=%s", guid)
+                    continue
+                stats["activated"] += 1
+            await api.send(guid, "🤖 من فعالم ✅", reply_to=mid or None)
+            log.info("global activation ok chat=%s", guid)
         except Exception as exc:
-            log.debug("global activation failed chat=%s: %s", guid, exc)
-            failed += 1
+            stats["failed"] += 1
+            log.warning("global activation failed chat=%s: %s", guid, exc)
     await ctx.reply(
-        "🕵️ فعال‌سازی سراسری\n"
-        f"✅ فعال شد: {utils.fa_digits(activated)}\n"
-        f"🟢 از قبل فعال: {utils.fa_digits(already)}\n"
-        f"⏭ رد شد (ادمین نیست یا اشتراک ندارد): {utils.fa_digits(skipped)}\n"
-        f"❌ ناموفق: {utils.fa_digits(failed)}",
+        "🕵️ اطلاع‌رسانی سراسری «فعال»\n"
+        f"📨 ارسال شد: {utils.fa_digits(stats['sent'])}\n"
+        f"✅ فعال شد: {utils.fa_digits(stats['activated'])}\n"
+        f"🟢 از قبل فعال: {utils.fa_digits(stats['already'])}\n"
+        f"🛡 FBI ادمین نیست: {utils.fa_digits(stats['not_admin'])}\n"
+        f"💤 اشتراک ندارد: {utils.fa_digits(stats['no_sub'])}\n"
+        f"❌ ناموفق: {utils.fa_digits(stats['failed'])}",
         reply=False,
     )
 

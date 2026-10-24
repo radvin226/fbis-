@@ -62,8 +62,8 @@ async def _ensure_creators_present(ctx, members):
     return added
 
 
-async def activate(ctx, *, explicit=False, trusted=False) -> bool:
-    # trusted=True: فعال‌سازی سراسری از PV سازنده؛ پیام «فعال» را خود FBI فرستاده و سازنده دستور داده است.
+async def activate(ctx, *, explicit=False, silent=False) -> bool:
+    # silent=True: بدون کارت گزارش؛ برای فعال‌سازی سراسری که از خود اطلاع‌رسانی انجام می‌شود.
     g = ctx.g
     # Manual FBI owner must survive restart/reactivation. Older unknown owner
     # records are still cleared; live creator ownership is refreshed otherwise.
@@ -102,7 +102,7 @@ async def activate(ctx, *, explicit=False, trusted=False) -> bool:
 
     owner, admins, members = await fetch_admins(ctx)
     await _ensure_creators_present(ctx, members)
-    if explicit and ctx.author and not trusted:
+    if explicit and ctx.author:
         aid = str(ctx.author)
         # Activation permission can come from a verified owner/admin, but this
         # check must never write that sender into the owner field.
@@ -145,6 +145,8 @@ async def activate(ctx, *, explicit=False, trusted=False) -> bool:
     g["admins"] = [x for x in dict.fromkeys(str(a) for a in admins) if str(x) != str(owner_for_admin_filter)]
     db.save("groups")
     if was_active and not explicit:
+        return True
+    if silent:
         return True
 
     scanned_messages = 0

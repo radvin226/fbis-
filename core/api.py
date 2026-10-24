@@ -2037,7 +2037,7 @@ class API:
 
         # مسیر سوم: فهرست اعضا. این fallback برای زمانی است که GetParticipantRequest
         # روی یک کانال خاص پاسخ مناسبی نمی‌دهد.
-        for chat_ref in (channel_guid, "@FBIbotdd"):
+        for chat_ref in (channel_guid,):
             try:
                 rows = await self.call("get_chat_members", self._chat_arg(chat_ref) if not str(chat_ref).startswith("@") else chat_ref, limit=5000, filter_admins=False)
                 for row in members_of(rows):

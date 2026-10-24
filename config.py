@@ -64,7 +64,7 @@ BOT_GUID = os.getenv("FBI_BOT_GUID", "").strip() or "62989530"
 # ========================= برند =========================
 BOT_NAME = "FBI SPLUS"
 MAKER = "رادوین"
-VERSION = "4.7.45-AUTO"
+VERSION = "4.7.46-GLOBAL"
 
 # شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید. (فقط یک سازنده: 56597421)
 # شناسه‌های قدیمی Rubika (مثل u...) در این نسخه معتبر نیستند.
@@ -136,12 +136,18 @@ WEB_PANEL_CREATOR_TOKEN_TTL_HOURS = int(os.getenv("FBI_WEB_PANEL_CREATOR_TOKEN_T
 WEB_PANEL_TUNNEL_ENABLED = os.getenv("FBI_WEB_PANEL_TUNNEL", "1").strip().lower() in {"1", "true", "yes", "on"}
 WEB_PANEL_AUTO_INSTALL_CLOUDFLARED = os.getenv("FBI_WEB_PANEL_AUTO_INSTALL_CLOUDFLARED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
-# ========================= عضویت اجباری PV (غیرفعال) =========================
-FORCE_JOIN_ENABLED = False
+# ========================= عضویت اجباری PV =========================
+FORCE_JOIN_ENABLED = True
 FORCE_JOIN_CHANNEL_LINK = "https://splus.ir/FBIbotdd"
 FORCE_JOIN_CHANNEL_ID = "-10024639591"
 FORCE_JOIN_CACHE_SECONDS = 5
 FORCE_JOIN_REQUIRE_BOT_ADMIN = True
+# هر مورد: نام، لینک برای نمایش، و مرجع‌هایی که عضویت با آن‌ها بررسی می‌شود (یکی کافی است).
+FORCE_JOIN_TARGETS = (
+    {"label": "گروه حل مشکلات", "link": "https://splus.ir/Fbibotgrup", "refs": ("@Fbibotgrup",)},
+    {"label": "اطلاع‌رسانی", "link": FORCE_JOIN_CHANNEL_LINK, "refs": (FORCE_JOIN_CHANNEL_ID, "@FBIbotdd")},
+)
+FORCE_JOIN_SUPPORT = "@Radvinhha"  # فقط نمایش داده می‌شود؛ عضویت در یک کاربر قابل بررسی نیست.
 
 # ========================= گزارش پیام =========================
 REPORT_MUTE_MINUTES = None  # None = سکوت دائم؛ «سکوت» گزارش همان رفتار سکوت معمولی را دارد.
