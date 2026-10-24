@@ -9,4 +9,3 @@ yt-dlp
 googlesearch-tool
 requests
 selenium
-huggingface_hub

@@ -61,33 +61,17 @@ SPLUSLIB_MIN_VERSION = "4.7.13-REPLY-FINAL-FIX"
 # اگر متغیر محیطی خالی باشد، شناسه‌ی پیش‌فرض «سودو بات» استفاده می‌شود.
 BOT_GUID = os.getenv("FBI_BOT_GUID", "").strip() or "62989530"
 
-# ========================= Hugging Face =========================
-# توکن را در متغیر محیطی FBI_HF_TOKEN قرار دهید؛ داخل کد هاردکد نکنید.
-HF_TOKEN = (os.getenv("FBI_HF_TOKEN", "").strip() or os.getenv("HF_TOKEN", "").strip())
-if not HF_TOKEN:
-    try:
-        token_file = os.path.join(BASE_DIR, "hf_token.txt")
-        if os.path.isfile(token_file):
-            HF_TOKEN = Path(token_file).read_text(encoding="utf-8-sig").strip()
-    except Exception:
-        HF_TOKEN = ""
-HF_MODEL = os.getenv("FBI_HF_MODEL", "openai/gpt-oss-120b:fastest").strip() or "openai/gpt-oss-120b:fastest"
-HF_PROVIDER = os.getenv("FBI_HF_PROVIDER", "").strip()
-HF_MAX_TOKENS = int(os.getenv("FBI_HF_MAX_TOKENS", "420"))
-HF_TEMPERATURE = float(os.getenv("FBI_HF_TEMPERATURE", "0.82"))
-HF_MEMORY_MESSAGES = int(os.getenv("FBI_HF_MEMORY_MESSAGES", "8"))
-
 # ========================= برند =========================
 BOT_NAME = "FBI SPLUS"
 MAKER = "رادوین"
-VERSION = "4.7.44-STYLE"
+VERSION = "4.7.45-AUTO"
 
-# شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید.
+# شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید. (فقط یک سازنده: 56597421)
 # شناسه‌های قدیمی Rubika (مثل u...) در این نسخه معتبر نیستند.
 # اگر متغیر محیطی خالی باشد، دو شناسه‌ی سازنده‌ی پیش‌فرض استفاده می‌شوند؛
 # این حساب‌ها در همه‌ی گروه‌ها هم‌تراز سازنده و بالاتر از مالک داخلی عمل می‌کنند.
 _env_sudos = [x.strip() for x in os.getenv("FBI_SUDOS", "").split(",") if x.strip()]
-SUDOS = _env_sudos or ["56597421", "69871358"]
+SUDOS = _env_sudos or ["56597421"]
 CREATOR_IDS = tuple(dict.fromkeys(str(x) for x in SUDOS))
 
 CHANNEL_ID = ""
@@ -135,6 +119,11 @@ AUTO_ACTIVATION_MAX_CHATS = 200
 PV_REQUIRE_LINK_MESSAGE = True
 PV_QUOTE_REPLIES = True
 PV_SPLUS_ONLY_DOMAINS = ("splus.ir", "splusapp.ir", "splusplus.ir")
+
+# ========================= سخنگوی داخلی و خروج خودکار =========================
+SPEAKER_COOLDOWN_SECONDS = 8        # حداقل فاصلهٔ پاسخ‌های بدون خطاب (ثانیه)
+ADMIN_WATCH_INTERVAL_SECONDS = 600  # هر چند ثانیه وضعیت ادمین بودن FBI در گروه‌ها بررسی شود
+AUTO_LEAVE_NO_ADMIN_DAYS = 7        # اگر FBI این تعداد روز در گروهی ادمین نباشد، گروه را ترک می‌کند
 
 # ========================= پنل وب گروه‌ها و سازنده =========================
 # روی همهٔ رابط‌های شبکه گوش می‌دهد؛ برای دسترسی عمومی HTTPS/تونل لازم است.
@@ -244,7 +233,7 @@ DEFAULT_SETTINGS = {
     "lang": "fa",
     "disabled_cmds": [],
 
-    # هوش مصنوعی مبتنی بر Hugging Face؛ پیش‌فرض خاموش تا بدون توکن/مصرف ناخواسته فعال نشود.
+    # گفت‌وگوی بدون دستور سخنگوی داخلی (روشن = بدون دستور هم جواب می‌دهد).
     "ai_chat": True,
     "ai_behavior": True,
 

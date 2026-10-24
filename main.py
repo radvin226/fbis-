@@ -18,7 +18,7 @@ from core import msgstyle, ranks, splash, utils, subscription
 from core.api import API
 from core.context import Ctx, make_update
 from core.db import db
-from modules import admin, beauty, fun, group_tools, lists, locks, media, misc, stats, timers, v2_features, sassy_ai, guide, reports, advanced
+from modules import admin, beauty, fun, group_tools, lists, locks, media, misc, stats, timers, v2_features, guide, reports, advanced
 import webpanel
 
 try:
@@ -40,7 +40,7 @@ log = logging.getLogger("fbi")
 app = SplusClient(config.SESSION_NAME, device_model=config.DEVICE_MODEL)
 api = API(app)
 ME = {"guid": None, "name": config.BOT_NAME}
-MODULES = (beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, sassy_ai, advanced, misc)
+MODULES = (beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, advanced, misc)
 _ADMIN_SYNC = {}
 _ADMIN_SYNC_TTL = 15.0
 _SUDO_PROMOTE_CACHE = {}
@@ -521,6 +521,14 @@ async def on_chat_action(event):
             await admin.activate(fake)
     except Exception as exc:
         log.debug("chat action admin check failed: %s", exc)
+    if str(ME.get("guid")) in {str(x) for x in target_ids} and (_event_is_join(event) or _event_is_leave(event)):
+        # خود FBI اضافه یا حذف شده است؛ این رویداد عضویت یک کاربر عادی نیست.
+        if _event_is_join(event):
+            await _on_bot_joined(chat_id, g, is_admin=bool(g.get("_bot_admin")))
+        else:
+            _on_bot_left(chat_id, g)
+        db.save(("groups", "stats"))
+        return
     if g.get("active"):
         try:
             fake = Ctx(app, api, SimpleNamespace(object_guid=chat_id, author_guid=target, message_id="", text="", is_group=True, is_private=False, is_channel=False), ME["guid"])
@@ -592,10 +600,10 @@ OWNER_HELP = """```text
 • برکناری [ریپلای/آیدی]
 • لیست ادمین / لیست ویژه / مقامم
 • زیرپرچم من / لغو زیرپرچم
+• فعال سازی سراسری
 
-سازندگان FBI:
+سازنده FBI:
 • `56597421`
-• `69871358`
 
 اشتراک سازنده:
 • هدیه اشتراک سراسری [روز]
@@ -1009,6 +1017,9 @@ async def handle_private(ctx):
         if ctx.text == "/owner":
             await _owner_panel(ctx)
             return
+        if utils.compact(ctx.text) == utils.compact("فعال سازی سراسری"):
+            await owner_global_activate(ctx)
+            return
         if ctx.text == "هدیه اشتراک سراسری":
             subscription.mark_gift_all_pending(ctx.author)
             await ctx.reply(
@@ -1102,9 +1113,11 @@ async def handle_private(ctx):
     ]), "🕵️"))
 
 
-async def auto_activate_once():
-    if not ME.get("guid"):
-        return
+BOT_JOIN_ADMIN_REQUEST = "🕵️ من FBI هستم، منو ادمین کن"
+
+
+async def _fetch_chat_objects():
+    """فهرست خام گفتگوها (گروه و خصوصی) از SplusLib؛ خطای هر منبع نادیده گرفته می‌شود."""
     chats = []
     for name, kwargs in (("get_chats", {"limit": config.AUTO_ACTIVATION_MAX_CHATS}), ("get_groups", {})):
         fn = getattr(app, name, None)
@@ -1120,6 +1133,150 @@ async def auto_activate_once():
                 chats.extend(value)
         except Exception:
             continue
+    return chats
+
+
+async def _known_group_guids():
+    """شناسهٔ گروه‌های شناخته‌شده. گروه‌ها شناسهٔ منفی دارند؛ حساب‌های خصوصی هرگز ترک نمی‌شوند."""
+    found = {}
+    for guid, g in list(db.data.get("groups", {}).items()):
+        if str(guid).startswith("-") and not g.get("left_at"):
+            found[str(guid)] = True
+    for chat in await _fetch_chat_objects():
+        cid = api_mod.guid_of(chat) or _get(chat, "chat_id", "peer_id", default=None)
+        if cid is not None and str(cid).startswith("-"):
+            found[str(cid)] = True
+    return list(found)
+
+
+async def admin_watch_once():
+    """اگر FBI بیش از AUTO_LEAVE_NO_ADMIN_DAYS روز در گروهی ادمین نباشد، آن گروه را ترک می‌کند."""
+    if not ME.get("guid"):
+        return
+    now = time.time()
+    limit = float(getattr(config, "AUTO_LEAVE_NO_ADMIN_DAYS", 7)) * 86400
+    for guid in await _known_group_guids():
+        g = db.group(guid)
+        if g.get("left_at"):
+            continue
+        try:
+            is_admin = await api.is_admin(guid, ME["guid"], fresh=True)
+        except Exception as exc:
+            log.debug("admin watch failed chat=%s: %s", guid, exc)
+            continue
+        if is_admin:
+            g["_bot_admin"] = True
+            g["last_admin_at"] = now
+            db.save("groups")
+            continue
+        g["_bot_admin"] = False
+        since = float(g.get("last_admin_at") or g.get("joined_at") or 0)
+        if not since:
+            # اولین مشاهدهٔ گروهی که زمان ثبت ندارد: شمارش یک‌هفته‌ای از همین لحظه شروع می‌شود.
+            g["last_admin_at"] = now
+            db.save("groups")
+            continue
+        if now - since < limit:
+            continue
+        try:
+            await api.leave_group(guid)
+        except Exception as exc:
+            log.warning("auto leave failed chat=%s: %s", guid, exc)
+            continue
+        g["active"] = False
+        g["left_at"] = now
+        db.save("groups")
+        db.log("auto_leave", f"chat={guid} left after {config.AUTO_LEAVE_NO_ADMIN_DAYS} days without admin")
+        log.info("FBI left chat=%s after the no-admin period", guid)
+
+
+async def admin_watch_loop():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await admin_watch_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.debug("admin watch loop failed: %s", exc)
+        await asyncio.sleep(max(60, int(getattr(config, "ADMIN_WATCH_INTERVAL_SECONDS", 600))))
+
+
+async def _on_bot_joined(chat_id, g, is_admin):
+    """FBI به گروه اضافه شد: اگر ادمین نیست درخواست ادمین شدن می‌دهد و لینک گروه را می‌فرستد."""
+    now = time.time()
+    g["joined_at"] = now
+    g["last_admin_at"] = now
+    g["left_at"] = 0
+    g["_bot_admin"] = bool(is_admin)
+    db.save("groups")
+    if not is_admin and not g.get("active"):
+        try:
+            await api.send(chat_id, BOT_JOIN_ADMIN_REQUEST)
+        except Exception as exc:
+            log.debug("join request send failed chat=%s: %s", chat_id, exc)
+    try:
+        link = str((await api.group_link(chat_id)).get("link") or "")
+    except Exception:
+        link = ""
+    if link:
+        try:
+            await api.send(chat_id, f"🔗 لینک گروه:\n{link}")
+        except Exception as exc:
+            log.debug("link send failed chat=%s: %s", chat_id, exc)
+
+
+def _on_bot_left(chat_id, g):
+    g["active"] = False
+    g["_bot_admin"] = False
+    g["left_at"] = time.time()
+    db.save("groups")
+
+
+async def owner_global_activate(ctx):
+    """PV سازنده، «فعال سازی سراسری»: در هر گروه غیرفعالی که FBI در آن ادمین است،
+    خود FBI پیام «فعال» می‌فرستد و همان پیام را به‌عنوان دستور فعال‌سازی اجرا می‌کند."""
+    activated = already = skipped = failed = 0
+    for guid in await _known_group_guids():
+        g = db.group(guid)
+        if g.get("active") and not g.get("manual_disabled"):
+            already += 1
+            continue
+        if not subscription.allowed(guid):
+            skipped += 1
+            continue
+        try:
+            if not await api.is_admin(guid, ME["guid"], fresh=True):
+                skipped += 1
+                continue
+            sent = await api.send(guid, "فعال")
+            trigger = SimpleNamespace(
+                object_guid=guid, author_guid=ME["guid"], message_id=str(api.result_message_id(sent) or ""),
+                text="فعال", is_group=True, is_private=False, is_channel=False,
+            )
+            fake = Ctx(app, api, trigger, ME["guid"])
+            fake.rank = ranks.BOT
+            if await admin.activate(fake, explicit=True, trusted=True):
+                activated += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            log.debug("global activation failed chat=%s: %s", guid, exc)
+            failed += 1
+    await ctx.reply(
+        "🕵️ فعال‌سازی سراسری\n"
+        f"✅ فعال شد: {utils.fa_digits(activated)}\n"
+        f"🟢 از قبل فعال: {utils.fa_digits(already)}\n"
+        f"⏭ رد شد (ادمین نیست یا اشتراک ندارد): {utils.fa_digits(skipped)}\n"
+        f"❌ ناموفق: {utils.fa_digits(failed)}",
+        reply=False,
+    )
+
+
+async def auto_activate_once():
+    if not ME.get("guid"):
+        return
+    chats = await _fetch_chat_objects()
     seen = set()
     for chat in chats:
         cid = api_mod.guid_of(chat) or _get(chat, "chat_id", "peer_id", default=None)
@@ -1386,6 +1543,7 @@ async def boot():
     _atexit.register(db.flush)
     asyncio.create_task(db_flush_loop())
     _BOT_TASK = asyncio.create_task(auto_activation_loop())
+    asyncio.create_task(admin_watch_loop())
     asyncio.create_task(timers.run_timers(dispatch))
     asyncio.create_task(group_unlock_loop())
 
