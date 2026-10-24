@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """ابزارهای مدیریتی گروه: حذف پیام، پین، کال، لینک، درخواست عضویت، تگ و منشن."""
 
+import asyncio
 import re
 import random
 
@@ -40,19 +41,30 @@ async def handle(ctx) -> bool:
     g = ctx.g
 
     # ------------------------------------------------ حذف پیام
-    if text == "حذف" or re.match(r"^حذف \d+$", text):
+    m_del = re.fullmatch(r"حذف\s*(\d+)", text)
+    if text == "حذف" or m_del:
         if ctx.rank < ranks.ADMIN:
             return await _deny(ctx)
-        count = int(text[5:]) if len(text) > 4 else 0
+        if m_del:
+            # «حذف N» دقیقاً N پیام را حذف می‌کند؛ عدد را از کل متن می‌خوانیم، نه از بریدن رشته.
+            count = int(m_del.group(1))
+            if count < 1:
+                await ctx.err("تعداد باید بزرگ‌تر از صفر باشد. مثال: حذف 10")
+                return True
+            target = await ctx.target() if ctx.reply_id else None
+            removed, skipped = await _bulk_delete(ctx, count, only_user=target)
+            await ctx.reply(_delete_report(removed, count, skipped))
+            return True
 
-        if ctx.reply_id and not count:
+        if ctx.reply_id:
+            if str(ctx.reply_id) in await pinned_set(ctx):
+                await ctx.err("این پیام سنجاق است؛ پیام‌های سنجاق‌شده حذف نمی‌شوند.")
+                return True
             await ctx.api.delete(ctx.guid, [ctx.reply_id, ctx.message_id])
             return True
 
-        count = min(max(count, 1), 250)
-        target = await ctx.target() if ctx.reply_id else None
-        removed = await _bulk_delete(ctx, count, only_user=target)
-        await ctx.reply(f"🗑 {utils.fa_digits(removed)} پیام حذف شد.")
+        removed, skipped = await _bulk_delete(ctx, 1)
+        await ctx.reply(_delete_report(removed, 1, skipped))
         return True
 
     m = re.match(r"^حذف (شیشه|ادیت|ویرایش) (\d+)$", text)
@@ -60,8 +72,8 @@ async def handle(ctx) -> bool:
         if ctx.rank < ranks.SPECIAL:
             return await _deny(ctx, "ادمین ویژه و مالک")
         kind = "edited" if m.group(1) in ("ادیت", "ویرایش") else "glass"
-        removed = await _bulk_delete(ctx, int(m.group(2)), kind=kind)
-        await ctx.reply(f"🗑 {utils.fa_digits(removed)} پیام حذف شد.")
+        removed, skipped = await _bulk_delete(ctx, int(m.group(2)), kind=kind)
+        await ctx.reply(_delete_report(removed, int(m.group(2)), skipped))
         return True
 
     # ------------------------------------------------ پین
@@ -72,6 +84,7 @@ async def handle(ctx) -> bool:
             await ctx.err("روی پیام موردنظر ریپلای بزنید.")
             return True
         await ctx.api.pin(ctx.guid, ctx.reply_id, "Pin")
+        _remember_pin(g, ctx.reply_id, True)
         await ctx.ok("پیام سنجاق شد. 📌")
         return True
 
@@ -82,6 +95,7 @@ async def handle(ctx) -> bool:
             await ctx.err("روی پیام سنجاق‌شده ریپلای بزنید.")
             return True
         await ctx.api.pin(ctx.guid, ctx.reply_id, "Unpin")
+        _remember_pin(g, ctx.reply_id, False)
         await ctx.ok("سنجاق پیام برداشته شد.")
         return True
 
@@ -438,44 +452,109 @@ async def _tag(ctx, mode, scope, forced_guids=None):
 
 
 # ------------------------------------------------------------ حذف گروهی
-async def _bulk_delete(ctx, count, only_user=None, kind=None):
-    """آخرین پیام‌های گروه را می‌خواند و بر اساس شرط حذف می‌کند."""
-    collected, removed = [], 0
+def pinned_ids(g):
+    """شناسه‌های سنجاق‌شده‌ای که FBI خودش ثبت کرده است."""
+    return {str(x) for x in (g.get("pinned_ids") or []) if x is not None}
 
-    # SplusLib message dictionaries do not always expose ``is_edited`` after
-    # pagination. We keep an authoritative local history flag for edits.
+
+def is_pinned_message(msg):
+    """پیام‌هایی که SplusLib پرچم سنجاق بودن دارند."""
+    return any(api_mod._val(msg, key, default=None) is True for key in ("is_pinned", "pinned", "is_pin"))
+
+
+async def pinned_set(ctx):
+    """همهٔ شناسه‌های سنجاق‌شدهٔ گروه: ثبت‌شده توسط FBI و، اگر سرور اعلام کند، خود سرور."""
+    ids = pinned_ids(ctx.g)
+    try:
+        info = await ctx.api.chat_info_light(ctx.guid)
+    except Exception:
+        info = None
+    if info:
+        for key in ("pinned_message_id", "pinned_msg_id", "pinned_message", "pinned_id"):
+            value = api_mod._val(info, key, default=None)
+            if value is None or isinstance(value, (list, tuple, set)):
+                continue
+            if not isinstance(value, (str, int)):
+                value = api_mod._val(value, "id", "message_id", default=None)
+            if value is not None:
+                ids.add(str(value))
+    return ids
+
+
+def _remember_pin(g, message_id, pinned):
+    ids = [str(x) for x in (g.get("pinned_ids") or [])]
+    mid = str(message_id)
+    if pinned:
+        if mid not in ids:
+            ids.append(mid)
+    else:
+        ids = [x for x in ids if x != mid]
+    g["pinned_ids"] = ids[-300:]
+    db.save("groups")
+
+
+def _delete_report(removed, asked, skipped_pinned):
+    lines = [f"🗑 {utils.fa_digits(removed)} پیام حذف شد."]
+    if removed < asked:
+        lines.append(f"⚠️ فقط {utils.fa_digits(removed)} پیام قابل حذف پیدا شد "
+                     f"(از {utils.fa_digits(asked)} درخواستی).")
+    if skipped_pinned:
+        lines.append(f"📌 {utils.fa_digits(skipped_pinned)} پیام سنجاق‌شده دست‌نخورده ماند.")
+    return "\n".join(lines)
+
+
+async def _bulk_delete(ctx, count, only_user=None, kind=None):
+    """آخرین count پیام مطابق شرط را حذف می‌کند.
+
+    پیام‌های سنجاق‌شده هرگز حذف نمی‌شوند و در شمارش هم نمی‌آیند؛ پس «حذف ۱۰»
+    دقیقاً ۱۰ پیام غیرسنجاق (در صورت وجود) را حذف می‌کند.
+    خروجی: (تعداد حذف‌شده، تعداد پیام سنجاق‌شده‌ای که کنار گذاشته شد)
+    """
+    pinned = await pinned_set(ctx)
+    own = str(ctx.message_id)
+    collected, seen = [], set()
+    skipped_pinned = 0
+
+    # ویرایش‌شده‌ها از تاریخچهٔ محلی خوانده می‌شوند؛ فلگ ویرایش در صفحه‌بندی همیشه نیست.
     if kind == "edited":
         try:
-            local_history = db.data.get("history", {}).get(str(ctx.guid), [])
+            local_history = db.data.get("history", {}).get(str(ctx.guid), []) or []
             for item in reversed(local_history):
+                if len(collected) >= count:
+                    break
                 mid = api_mod._val(item, "m", "id", "message_id", default=None)
                 author = api_mod._val(item, "u", "sender_id", "author_id", default=None)
                 if not mid or api_mod._val(item, "e", "is_edited", default=False) is not True:
                     continue
-                if str(mid) == str(ctx.message_id):
+                mid = str(mid)
+                if mid == own or mid in seen or (only_user and str(author) != str(only_user)):
                     continue
-                if only_user and str(author) != str(only_user):
+                seen.add(mid)
+                if mid in pinned:
+                    skipped_pinned += 1
                     continue
-                collected.append(str(mid))
-                if len(collected) >= count:
-                    break
+                collected.append(mid)
         except Exception:
             pass
 
     middle = ctx.message_id
-    guard = 0
-    while len(collected) < count and guard < 20:
-        guard += 1
+    pages = 0
+    max_pages = max(30, count // 50 + 30)
+    while len(collected) < count and pages < max_pages:
+        pages += 1
         res = await ctx.api.get_last_messages(ctx.guid, middle)
         messages = api_mod._val(res, "messages", default=[]) or []
         if not messages:
             break
         for msg in messages:
             mid = api_mod._val(msg, "id", "message_id")
-            if not mid or str(mid) == str(ctx.message_id):
+            if mid is None:
                 continue
-            author = api_mod.sender_guid_of(msg)
-            if only_user and author != only_user:
+            mid = str(mid)
+            if mid == own or mid in seen:
+                continue
+            seen.add(mid)
+            if only_user and str(api_mod.sender_guid_of(msg)) != str(only_user):
                 continue
             if kind == "edited" and not api_mod._val(msg, "is_edited", "edit_date", default=False):
                 continue
@@ -483,18 +562,26 @@ async def _bulk_delete(ctx, count, only_user=None, kind=None):
                 blob = str(msg).lower()
                 if "keypad" not in blob and "glass" not in blob:
                     continue
-            collected.append(str(mid))
+            if mid in pinned or is_pinned_message(msg):
+                skipped_pinned += 1
+                continue
+            collected.append(mid)
             if len(collected) >= count:
                 break
-        # SplusLib returns newest -> oldest; the final id is therefore the
-        # correct cursor for the next page.
-        middle = api_mod._val(messages[-1], "id", "message_id")
+        # SplusLib returns newest -> oldest, so the last id is the cursor for the next page.
+        last_id = api_mod._val(messages[-1], "id", "message_id")
+        if last_id is None or str(last_id) == str(middle):
+            break
+        middle = last_id
 
-    for i in range(0, len(collected), 50):
-        await ctx.api.delete(ctx.guid, collected[i:i + 50])
-        removed += len(collected[i:i + 50])
+    removed = 0
+    for start in range(0, len(collected), 50):
+        batch = collected[start:start + 50]
+        await ctx.api.delete(ctx.guid, batch)
+        removed += len(batch)
+        await asyncio.sleep(0.4)
     await ctx.api.delete(ctx.guid, [ctx.message_id])
-    return removed
+    return removed, skipped_pinned
 
 
 async def _deny(ctx, who="ادمین‌ها، ادمین‌های ویژه و مالک"):

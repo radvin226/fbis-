@@ -110,7 +110,6 @@ HELP_SECTIONS = [
     ("📚 آموزش و سخنگو", [
         "یادگیری - [سوال] - [پاسخ]", "حذف یادگیری - [سوال]", "لیست یادگیری ها",
         "سخنگو روشن", "سخنگو خاموش", "سخنگو شخصی روشن", "سخنگو شخصی خاموش",
-        "هوش مصنوعی روشن", "هوش مصنوعی خاموش", "هوش مصنوعی فعال", "هوش مصنوعی غیرفعال",
         "یادگیری روشن", "یادگیری خاموش",
     ]),
     ("🎮 بازی و سرگرمی", [
@@ -663,7 +662,7 @@ async def handle(ctx) -> bool:
         await ctx.reply(await _prices(kind))
         return True
 
-    # ------------------------------------------------ حالت بدجنسی (هوش مصنوعی آفلاین)
+    # ------------------------------------------------ حالت بدجنسی (سخنگوی داخلی)
     if text in ("روشن کردن بدجنسی", "بدجنسی روشن"):
         if ctx.rank < ranks.ADMIN:
             await ctx.err("این دستور فقط برای ادمین‌هاست.")
@@ -694,49 +693,23 @@ async def handle(ctx) -> bool:
 
 
 # ------------------------------------------------------------ سخنگو
-SMALL_TALK = {
-    "سلام": ["سلام 🌹", "سلام خوش اومدی ☘️", "سلام بر شما 🌱"],
-    "خوبی": ["مرسی، تو خوبی؟", "عالیم 😎", "بد نیستم، تو چطوری؟"],
-    "خداحافظ": ["خدانگهدار 🌹", "به سلامت ☘️"],
-    "ممنون": ["خواهش می‌کنم 🌱", "قابلی نداشت ❤️"],
-    "ربات": ["جانم؟", "بله، در خدمتم ⚡"],
-}
-
-
 async def speaker(ctx) -> bool:
-    """سخنگوی رفتاری: سلام‌ها و Reply به خود FBI را خودکار جواب می‌دهد."""
+    """سخنگوی داخلی: بدون دستور و بدون سرویس خارجی به پیام‌های مناسب جواب می‌دهد."""
     g = ctx.g
     if not g.get("speaker"):
         return False
-    text = ctx.text
 
-    direct_reply = False
-    try:
-        should, direct_reply = await sassy_ai.should_respond(ctx)
-    except Exception:
-        should, direct_reply = (bool(ctx.reply_id), False)
-    if not should:
-        return False
-
-    learned = db.learn(ctx.guid).get(text)
+    # کلمه‌های یادگرفته‌شده (یادگیری) همیشه اولویت دارند.
+    learned = db.learn(ctx.guid).get(ctx.text)
     if learned:
         await ctx.reply(random.choice(learned))
         return True
 
-    if g.get("ai_chat"):
-        answer = await sassy_ai.generate(ctx, direct_to_bot=direct_reply)
-        await ctx.reply(answer)
-        return True
-
-    if g.get("sassy") or sassy_ai.is_greeting(text):
-        await ctx.reply(sassy_ai.reply_for(text))
-        return True
-
-    for key, answers in SMALL_TALK.items():
-        if key in text:
-            await ctx.reply(random.choice(answers))
-            return True
-    return False
+    reply = await sassy_ai.answer(ctx)
+    if not reply:
+        return False
+    await ctx.reply(reply)
+    return True
 
 
 # ------------------------------------------------------------ قیمت‌ها

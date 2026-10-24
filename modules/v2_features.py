@@ -8,6 +8,7 @@ import config
 from core import ranks, utils, api as api_mod
 from core.db import db
 from modules import media
+from modules.group_tools import pinned_set, is_pinned_message
 
 
 def _music(g):
@@ -160,10 +161,11 @@ async def handle(ctx):
             await ctx.err(f"خواندن تاریخچه انجام نشد: {type(exc).__name__}: {exc}")
             return True
         ids, unknown_time, scanned = [], 0, len(rows or [])
+        pinned = await pinned_set(ctx)  # سنجاق‌شده‌ها هرگز در حذف همه پیام‌ها نمی‌روند
         for msg in rows or []:
             mid = api_mod._val(msg, "id", "message_id", default=None)
             ts = _message_time(msg)
-            if mid is None:
+            if mid is None or str(mid) in pinned or is_pinned_message(msg):
                 continue
             if ts is None:
                 unknown_time += 1  # never delete on a guess about the time

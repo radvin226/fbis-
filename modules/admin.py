@@ -45,7 +45,25 @@ async def fetch_admins(ctx):
     return owner, admins, members
 
 
-async def activate(ctx, *, explicit=False) -> bool:
+async def _ensure_creators_present(ctx, members):
+    """سازندهٔ تعریف‌شده (CREATOR_IDS) اگر عضو گروه نیست، به‌طور خودکار اضافه می‌شود."""
+    present = {str(api_mod.guid_of(m)) for m in (members or []) if api_mod.guid_of(m) is not None}
+    added = []
+    for cid in getattr(config, "CREATOR_IDS", ()):
+        if str(cid) in present:
+            continue
+        try:
+            if await ctx.api.add_member(ctx.guid, str(cid)):
+                added.append(str(cid))
+        except Exception:
+            pass
+    if added:
+        db.log("creator", f"added creators chat={ctx.guid}: {', '.join(added)}")
+    return added
+
+
+async def activate(ctx, *, explicit=False, trusted=False) -> bool:
+    # trusted=True: فعال‌سازی سراسری از PV سازنده؛ پیام «فعال» را خود FBI فرستاده و سازنده دستور داده است.
     g = ctx.g
     # Manual FBI owner must survive restart/reactivation. Older unknown owner
     # records are still cleared; live creator ownership is refreshed otherwise.
@@ -83,7 +101,8 @@ async def activate(ctx, *, explicit=False) -> bool:
         return False
 
     owner, admins, members = await fetch_admins(ctx)
-    if explicit and ctx.author:
+    await _ensure_creators_present(ctx, members)
+    if explicit and ctx.author and not trusted:
         aid = str(ctx.author)
         # Activation permission can come from a verified owner/admin, but this
         # check must never write that sender into the owner field.

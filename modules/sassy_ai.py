@@ -1,161 +1,390 @@
 # -*- coding: utf-8 -*-
-"""FBI SPLUS — behavioural Hugging Face speaker.
+"""FBI SPLUS — سخنگوی داخلی و قانون‌محور (بدون سرویس خارجی).
 
-- Uses Hugging Face Inference Providers through ``huggingface_hub.InferenceClient``.
-- Default model: openai/gpt-oss-120b.
-- Remembers short per-user conversations plus the recent group context.
-- Detects when a message is actually addressed to FBI (reply/mention/greeting).
-- Keeps commands/moderation outside the AI path.
+پیام‌ها با واژه‌نامهٔ داخلی تطبیق داده می‌شوند و بر اساس «قصد» پیام، پاسخ مناسب
+انتخاب می‌شود. برای گفت‌وگو نیازی به دستور نیست:
+- اگر کسی به پیام FBI ریپلای کند، FBI را صدا بزند، یا جمله‌ای با قصد شناخته‌شده بنویسد، پاسخ می‌گیرد.
+- پیام‌های بی‌ربط و بدون خطاب مستقیم بی‌جواب می‌مانند تا گروه شلوغ نشود.
+- پاسخ‌ها تکراری نمی‌شوند و به زمینهٔ گفت‌وگو توجه می‌کنند (مثلاً «آره» بعد از یک سؤال).
+- هیچ درخواست شبکه‌ای انجام نمی‌شود و هیچ متن «هوش مصنوعی» در پاسخ‌ها نیست.
 """
 from __future__ import annotations
 
 import asyncio
+import ast
+import operator
 import random
 import re
-import os
-from typing import Any
+import time
+from dataclasses import dataclass
 
 import config
-from core.db import db
 from core import api as api_mod
+from core import utils
 
-try:
-    from huggingface_hub import InferenceClient
-except ImportError:  # optional dependency
-    InferenceClient = None
 
-_client = None
-_user_locks: dict[str, asyncio.Lock] = {}
+# ------------------------------------------------------------------ نرمال‌سازی
+_DIACRITICS = re.compile("[\u064b-\u065f\u0670\u0640]")
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0000FE00-\U0000FE0F\U0000200D]")
+_SYMBOLS = re.compile(r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~«»…،؛؟٪×÷“”‘’]")
+_REPEAT = re.compile(r"(.)\1+")
 
-FALLBACK = [
-    "درود 😎 بگو ببینم چه خبر شده؟",
-    "جانم؟ FBI اینجاست 👀",
-    "به‌به 😄 گوشم با توئه.",
-    "اوکی رفیق، بگو ببینم چی توی سرت می‌گذره 😂",
-    "من حواسم هست؛ ادامه بده 🫡",
-]
 
-SYSTEM_PROMPT = """
-تو FBI SPLUS هستی؛ یک ربات مدیریت گروه و دستیار گفت‌وگویی فارسی.
-لحن: طبیعی، کوتاه، باهوش، شوخ و محاوره‌ای؛ نه خشک و کتابی.
-وقتی مخاطب سلام می‌کند، طبیعی سلام و احوالپرسی کن. وقتی درباره خود FBI، مدیریت گروه،
-دستورها، هوش مصنوعی یا پیام قبلی خودت سؤال می‌شود، دقیق جواب بده. وقتی پیام فنی است،
-جواب فنی و کاربردی بده. شوخی داشته باش، ولی به افراد توهین تحقیرآمیز، نفرت‌پراکنی،
-تهدید یا حمله به ویژگی‌های شخصی نکن.
-پاسخ‌ها معمولاً ۱ تا ۵ جمله باشند. از توضیح اضافه و تکرار سؤال کاربر دوری کن.
-هیچ‌وقت وانمود نکن که انسان هستی؛ هویتت FBI BOT است.
-""".strip()
+def normalize(text: str) -> str:
+    """یکدست‌سازی برای تطبیق: حروف عربی، نیم‌فاصله، اعراب، ایموجی، علامت و تکرار حروف."""
+    t = utils.normalize(text or "").lower()
+    t = _DIACRITICS.sub("", t).replace("ة", "ه")
+    t = _EMOJI.sub(" ", t)
+    t = _SYMBOLS.sub(" ", t)
+    t = _REPEAT.sub(r"\1", t)
+    return " ".join(t.split())
 
-GREETING_PATTERNS = (
-    "سلام", "درود", "درود بر", "سلام علیک", "علیک سلام", "سلام و علیک",
-    "صبح بخیر", "عصر بخیر", "شب بخیر", "خوش اومدی", "خوش آمدی", "hello", "hi",
+
+# ------------------------------------------------------------------ قصدها
+@dataclass(frozen=True)
+class Intent:
+    name: str
+    phrases: tuple
+    replies: tuple = ()
+    kind: str = "text"          # text | followup | time | date | joke | crisis
+    sub: str = ""               # برای followup: yes | no | why | ok
+    max_words: int = 0          # بدون خطاب مستقیم، فقط اگر پیام کوتاه‌تر از این باشد
+    direct_only: bool = False   # فقط وقتی FBI خطاب شده یا ریپلای شده
+
+
+INTENTS: tuple = (
+    # ---------------------------------------------------------- سلام و احوال‌پرسی
+    Intent("morning", ("صبح بخیر", "صبحتون بخیر", "صبح شما بخیر", "صبح به خیر", "صبحت بخیر",
+                       "صبح بخیر دوستان", "good morning"),
+           ("صبح بخیر ☀️", "صبح به خیر، روز خوبی داشته باشی 🌞", "صبحتون بخیر، امروز قشنگ شروع بشه 🌸"),
+           max_words=5),
+    Intent("noon", ("ظهر بخیر", "ظهرتون بخیر", "ظهر به خیر", "ظهرت بخیر"),
+           ("ظهر بخیر 🌤", "ظهرت بخیر، ناهار خوردی؟ 🍲"), max_words=5),
+    Intent("evening", ("عصر بخیر", "عصرتون بخیر", "عصر به خیر", "عصرت بخیر"),
+           ("عصر بخیر 🌇", "عصرت بخیر، روز خوبی بوده؟ ☕"), max_words=5),
+    Intent("night", ("شب بخیر", "شب به خیر", "شبتون بخیر", "شبت بخیر", "شب خوش", "good night"),
+           ("شب بخیر 🌙", "شب خوش، خواب خوبی داشته باشی ⭐", "شبت بخیر، فردا روز بهتری خواهد بود 😴"),
+           max_words=5),
+    Intent("greet", ("سلام", "سلم", "سلام علیک", "علیک سلام", "سلام علیکم", "سلام و علیکم",
+                     "سلام به همه", "سلام به همگی", "سلام بر همه", "درود", "درود بر شما", "درود بر همه",
+                     "هلو", "hi", "hello", "hey", "salam"),
+           ("سلام 🌹", "سلام، خوش اومدی ☘️", "علیک سلام 😄", "درود بر شما 🌱",
+            "سلام به روی ماهت 🌞", "به به، سلام رفیق 😎", "سلام، چطوری؟ 👋"),
+           max_words=6),
+    Intent("farewell", ("خداحافظ", "خدا حافظ", "خدافظ", "بای", "بای بای", "bye", "بدرود",
+                        "فعلا", "به امید دیدار", "من برم", "باید برم", "میرم دیگه", "گود بای"),
+           ("خدانگهدار 🌹", "به سلامت ☘️", "فعلاً، مراقب خودت باش 👋", "به امید دیدار 🌱",
+            "برو به سلامت، مواظب خودت باش 🤍", "بای بای 😊"),
+           max_words=6),
+    Intent("thanks", ("ممنون", "ممنونم", "مرسی", "مرسی ازت", "مرسی از تو", "ممنون ازت", "ممنون از تو",
+                      "ممنونم ازت", "تشکر", "متشکرم", "سپاس", "سپاسگزارم", "دمت گرم", "دستت درد نکنه",
+                      "دستتون درد نکنه", "قربانت", "تشکر میکنم", "thanks", "thank you"),
+           ("خواهش می‌کنم 🌱", "قابلی نداشت ❤️", "قربانت 😎", "خوشحالم که کمکی کردم 🌹",
+            "نوش جان 🙏", "خواهش، همیشه در خدمتم ☘️", "مرسی از تو که هستی 😊"),
+           max_words=6),
+    Intent("sorry", ("ببخشید", "ببخشین", "معذرت", "معذرت میخوام", "متاسفم", "sorry"),
+           ("اشکالی نداره 🙂", "خواهش می‌کنم، پیش میاد 🌱", "عیبی نداره، رد شو 😊",
+            "اشکالی نیست، خوبی؟"),
+           max_words=6),
+    Intent("how", ("خوبی", "خوبین", "خوبید", "چطوری", "چطورید", "چطورین", "حالت چطوره",
+                   "حال شما چطوره", "حالتون چطوره", "حالت خوبه", "احوالت", "احوال شما", "چه خبر",
+                   "چه خبرا", "چخبر", "خبر چیه", "خوب هستی", "خوب هستید", "تو خوبی", "شما خوبید",
+                   "خوبی تو", "how are you"),
+           ("من که سرحالم 😎 تو چطوری؟", "آنلاینم و آماده‌ام 😂 تو خوبی؟",
+            "خوبم، ممنون که پرسیدی 🌹 تو چطوری؟", "بد نیستم 🙂 تو چه خبر؟",
+            "عالی‌ام، تو خوبی؟ ☘️", "هستم و حواسم به گروه هست 👀 تو چی؟"),
+           max_words=5),
+
+    # ---------------------------------------------------------- هویت و سازنده
+    Intent("identity", ("تو کی هستی", "کی هستی", "تو کیستی", "اسمت چیه", "اسمت چیست", "اسم تو چیه",
+                        "اسمتو بگو", "اسمت چی", "چی هستی", "تو چی هستی", "چیکاره ای", "چیکارهای",
+                        "چیکاره هستی", "اسم داری"),
+           ("من FBI هستم؛ ربات مدیریت گروه 🕵️", "اسمم FBI هست؛ نگهبان گروهتون 🕵️",
+            "من FBI هستم، هم مدیر گروهم و هم همراهت 😎"),
+           max_words=6),
+    Intent("identity_bot", ("آدمی", "انسانی", "تو آدمی", "تو انسانی", "انسان هستی", "تو انسان هستی",
+                            "واقعی هستی", "ربات هستی", "تو ربات هستی", "تو یه ربات هستی",
+                            "تو یک ربات هستی", "بات هستی", "تو بات هستی"),
+           ("نه، من یه ربات هستم 🤖 ولی بد نیستم، قول میدم 😄", "درست حدس زدی، ربات هستم 🤖",
+            "آره، ربات مدیریت گروه هستم 🤖"),
+           max_words=5, direct_only=True),
+    Intent("creator", ("کی ساختت", "کی ساخته", "کی تو رو ساخته", "کی درستت کرده", "کی درستت کرد",
+                       "سازندت کیه", "سازندت کیست", "سازنده ات کیه", "سازندهات کیه", "سازنده کیه",
+                       "سازنده کیست", "کی برنامه نویست", "کی برنامهنویست", "کی برنامهنویستت",
+                       "کی نوشتت", "کی طراحت کرده", "رادوین کیه", "مالکت کیه"),
+           ("من توسط {maker} ساخته شدم 🌹", "سازنده‌ام {maker} است 🌹",
+            "{maker} منو ساخته؛ افتخار می‌کنم 😎"),
+           max_words=6),
+    Intent("age", ("چند سالته", "چندسالته", "چند سالت", "سنت چنده", "سنت چقدره", "سنت چقدر"),
+           ("من سن ندارم 😄 ولی همیشه جوونم!", "سن که ندارم، ولی سرعتم بالاست ⚡",
+            "توی دنیای ربات‌ها هنوز بچه‌ام 😂"),
+           max_words=5),
+    Intent("location", ("کجایی", "کجا هستی", "کجایید", "کجایین", "کجا زندگی میکنی",
+                        "اهل کجایی", "کجا بودی", "کجا میمونی"),
+           ("همین‌جا توی گروهم 😎", "گوشه‌ی گروه نشستم و حواسم بهتونه 👀",
+            "همین نزدیکی‌ها، توی همین گروه 🕵️"),
+           max_words=5),
+
+    # ---------------------------------------------------------- راهنمایی و ابزارها
+    Intent("abilities", ("چیکار میکنی", "چه کاری میکنی", "چه کار میکنی", "چه کارایی میکنی",
+                         "چه کارهایی میکنی", "چیکار بلدی", "چه کاری بلدی", "چی بلدی",
+                         "چه کاری انجام میدی", "کمکم میکنی", "کمک میکنی", "چه دستوری داری",
+                         "دستوراتت", "دستورهات", "دستورات", "دستورها", "راهنمایی کن", "راهنما بده"),
+           ("گروه رو مدیریت می‌کنم، آمار می‌گیرم، سرگرمی دارم و کنارتم 😎 برای دیدن همه دستورها «راهنما» رو بفرست 📖",
+            "کارهای زیادی بلدم؛ مدیریت، قفل، آمار و سرگرمی 🕵️ «راهنما» رو بفرست تا همه‌شون رو ببینی 📖"),
+           max_words=6),
+    Intent("time", ("ساعت چنده", "ساعت چند", "ساعت چنده الان", "الان ساعت چنده", "ساعت الان چنده",
+                    "ساعت چنده امروز", "الان ساعت چند است"),
+           kind="time", max_words=5),
+    Intent("date", ("امروز چندمه", "امروز چند مه", "امروز چه تاریخیه", "تاریخ امروز", "امروز چه روزیه",
+                    "تاریخ چنده", "امروز چندشنبه", "امروز چه روزی", "چندمه امروز", "امروز چه روزی هست"),
+           kind="date", max_words=6),
+    Intent("weather", ("هوا چطوره", "هوا چجوریه", "هوا چطوریه", "آب و هوا", "آب و هوا چطوره",
+                       "بارون میاد", "باران میاد", "برف میاد"),
+           ("برای هوای لحظه‌ای باید از یه سایت یا اپ هواشناسی بپرسی 🌤 ولی امیدوارم هوای دلت خوب باشه 🙂",
+            "هوا رو دقیق نمی‌تونم چک کنم ☂️ اگه بارونه، یه چتر همراهت باشه 😄"),
+           max_words=5),
+    Intent("price", ("قیمت دلار", "دلار چنده", "قیمت دلار چنده", "دلار امروز", "دلار امروز چنده",
+                     "قیمت طلا", "طلا چنده", "قیمت طلا چنده", "قیمت سکه", "سکه چنده", "قیمت سکه چنده",
+                     "قیمت بیت کوین", "بیت کوین چنده", "قیمت ارز", "قیمت ارز دیجیتال", "قیمت ارزدیجیتال"),
+           ("برای قیمت لحظه‌ای «قیمت ارز» یا «قیمت طلا» رو بفرست 💵",
+            "قیمت ارز، طلا و ارز دیجیتال رو با دستورهای «قیمت ارز»، «قیمت طلا» و «ارزدیجیتال» می‌گیری 🥇"),
+           max_words=5),
+
+    # ---------------------------------------------------------- سرگرمی و حال‌وهوا
+    Intent("joke", ("جوک بگو", "یه جوک بگو", "یک جوک بگو", "جوک", "یه جوک", "بخندونم", "منو بخندون",
+                    "یه لطیفه بگو", "لطیفه بگو", "لطیفه", "یه لطیفه"),
+           kind="joke", max_words=5),
+    Intent("bored", ("بیکارم", "حوصلم سر رفته", "حوصلم سر رفت", "حوصلم سرفته", "حوصله ندارم",
+                     "کسی نیست", "هیچکس نیست", "خیلی خستم", "خستهام", "خسته ام", "حوصله‌ام سر رفته"),
+           ("حوصله‌ت سر رفته؟ بیا یه بازی کنیم: «بازی کلمات» یا «بازی ریاضی» 🎮",
+            "اگه حوصله داری، «لطیفه» یا «فال حافظ» رو بفرست 😄",
+            "یه چالش بده خودت: «چالش» رو بفرست و ببین چی میشه 😎",
+            "استراحت هم جزو کاره؛ یه چای بخور و برگرد ☕"),
+           max_words=6),
+    Intent("sad", ("ناراحتم", "غمگینم", "غمگین هستم", "حالم بده", "حالم خوب نیست", "حالم خوش نیست",
+                   "افسرده‌ام", "افسرده ام", "افسردم", "دلم گرفته", "دلم گرفتهست", "تنهام", "تنهایی",
+                   "گریه‌ام گرفته", "گریه میکنم", "بدبختم", "خیلی بدم"),
+           ("ناراحتیت رو می‌فهمم 🤍 اگه دوست داری حرف بزن، گوش می‌دم.",
+            "امیدوارم زود بهتر بشی 🌱 گاهی فقط حرف زدن کمک می‌کنه.",
+            "حالت که خوب نیست، کنارتیم 🤍 مواظب خودت باش."),
+           max_words=10),
+    Intent("happy", ("خوشحالم", "خیلی خوشحالم", "خوبم", "خیلی خوبم", "عالیم", "حالم خوبه",
+                     "حالم خوب است", "امروز خوبم", "خوشحال هستم", "خیلی خوشحال هستم"),
+           ("چه خوب! این حس خوب رو نگه دار 🌞", "خوشحالم که خوبی 😊", "عالیه، ادامه بده 🌹",
+            "قشنگه، امیدوارم روزت همین‌طور پر از خوبی باشه ☘️"),
+           max_words=6),
+    Intent("compliment", ("باحالی", "خیلی باحالی", "تو باحالی", "عالی هستی", "تو عالی هستی",
+                          "عالی بودی", "باهوشی", "خیلی باهوشی", "تو باهوشی", "خوشگلی", "آفرین",
+                          "افرین", "عاشقتم", "دوستت دارم", "تو بهترینی", "خیلی خوبی", "تو خیلی خوبی",
+                          "تو ماهی"),
+           ("ممنون 😊 تو هم عالی هستی!", "لطف داری 🌹", "قربانت، تو هم خیلی باحالی 😎",
+            "ممنونم ❤️ منم این گروه رو دوست دارم 🌱", "آفرین به خودت که اینجایی ☘️"),
+           max_words=6),
+    Intent("insult", ("احمق", "خنگ", "عوضی", "گمشو", "برو گمشو", "خفه شو", "بی شعور", "بیشعور",
+                      "الاغ", "خرف", "چرت", "مزخرف", "دیوانه", "کودن", "نفهم", "گاو"),
+           ("با احترام حرف بزن، لطفاً 🙂", "این حرف‌ها به گروه کمکی نمی‌کنه 🌱",
+            "باشه، ولی بیا محترمانه حرف بزنیم 🙏", "من همیشه محترمانه باهات حرف می‌زنم؛ تو هم همین‌طور 😊"),
+           direct_only=True),
+    Intent("crisis", ("خودکشی", "خودکشی کنم", "میخوام خودمو بکشم", "خودمو بکشم", "میخوام بمیرم",
+                      "دیگه نمیخوام زنده باشم", "زندگی نمیخوام", "خودزنی"),
+           kind="crisis"),
+
+    # ---------------------------------------------------------- پاسخ‌های کوتاه (فقط با زمینه)
+    Intent("fu_yes", ("آره", "اره", "بله", "اوهوم", "دقیقا", "درسته", "صحیح"), kind="followup", sub="yes"),
+    Intent("fu_no", ("نه", "نخیر", "نچ", "نیست", "نمیخوام", "نمیخواد"), kind="followup", sub="no"),
+    Intent("fu_why", ("چرا", "چطور", "چجوری", "چی", "چیه", "واقعا", "جدی", "یعنی چی", "یعنی", "چه"),
+           kind="followup", sub="why"),
+    Intent("fu_ok", ("اوکی", "باشه", "ok", "okay", "oke", "خب"), kind="followup", sub="ok"),
 )
-DIRECT_PATTERNS = (
-    "ربات", "بات", "fbi", "اف بی آی", "هوش مصنوعی", "هوش مصنوعی fbi",
+
+# پاسخ‌های مخصوص پاسخ کوتاه، بر اساس قصد پیام قبلی
+FOLLOWUP_REPLIES = {
+    "how": {
+        "yes": ("خوبه، خوشحالم 😊", "عالیه، همین حس خوب رو نگه دار 🌱"),
+        "no": ("ناراحتم که حالت خوب نیست 🤍 چی شده؟",),
+        "why": ("همین‌طوری پرسیدم، ولی دوست دارم بدونم حالت چطوره 🙂",),
+        "ok": ("👍", "عالیه 🙂"),
+    },
+    "joke": {
+        "yes": ("پس یکی دیگه؟ 😄 «لطیفه» رو بفرست",),
+        "no": ("باشه، هر وقت خواستی بگو 🙂",),
+        "why": ("چون گفتی بخندونمت 😂",),
+        "ok": ("👍 بخند!",),
+    },
+    "bored": {
+        "yes": ("پس بیا یه بازی کنیم: «بازی کلمات» 🎮",),
+        "no": ("باشه، پس یه کم استراحت کن ☕",),
+        "why": ("یه بازی کوچیک می‌تونه حالت رو عوض کنه 🎲",),
+        "ok": ("👍 پس «بازی ریاضی» رو بفرست 🎮",),
+    },
+    "sad": {
+        "yes": ("خوبه که حرف می‌زنی 🤍 بگو چی شده؟",),
+        "no": ("باشه، هر وقت خواستی حرف بزن 🌱",),
+        "why": ("گاهی دلیلش مشخص نیست؛ فقط بدون که کنارتیم 🤍",),
+        "ok": ("باشه 🤍 مراقب خودت باش.",),
+    },
+}
+FOLLOWUP_DEFAULT = {
+    "yes": ("عالیه 👍", "خوبه 🙂"),
+    "no": ("باشه 🙂", "اشکالی نداره 🌱"),
+    "why": ("سوالت رو کامل‌تر بگو تا بهتر جواب بدم 🙂",),
+    "ok": ("👍", "عالیه 🙂"),
+}
+
+CRISIS_REPLY = (
+    "ناراحتم که این‌قدر سخته 🤍 لطفاً همین الان با یکی از عزیزانت یا یک فرد قابل اعتماد حرف بزن "
+    "و تنها نمون. اگه احساس خطر فوری داری، با اورژانس ۱۱۵ تماس بگیر یا سریع خودت رو "
+    "به نزدیک‌ترین مرکز درمانی برسون."
 )
 
+JOKES = (
+    "چرا کتاب ریاضی ناراحت بود؟ چون مسئله‌های زیادی داشت 📚😂",
+    "معلم پرسید: چرا دیر اومدی؟ گفتم: قربان، داشتم ساعتم رو تنظیم می‌کردم 😅",
+    "چرا ماهی هیچ‌وقت دروغ نمی‌گه؟ چون همیشه تو آب‌ها شفافه 🐠",
+    "یه نفر به دوستش گفت: من هیچ‌وقت دروغ نمی‌گم. دوستش گفت: خب الان دروغ گفتی 😂",
+    "به دوستم گفتم یه جوک بگو؛ گفت: من فقط توی گروه‌ها خنده‌دارم، توی زندگی نه 😄",
+    "یه روز یه گوشی رفت دکتر، گفت حالم گرفته‌ست. دکتر گفت: یه کم شارژ بگیر، خوب می‌شی 🔋😂",
+)
 
-def normalize(t: str) -> str:
-    t = (t or "").lower()
-    t = t.replace("ي", "ی").replace("ك", "ک").replace("ۀ", "ه")
-    t = re.sub(r"(.)\1{2,}", r"\1", t)
-    return re.sub(r"\s+", " ", t).strip()
+QUESTION_FALLBACK = (
+    "سوالت رو کامل‌تر بگو تا بهتر جوابت رو بدم 🙂",
+    "هنوز متوجه نشدم؛ یه کم واضح‌تر بپرس 🤔",
+    "این یکی رو نمی‌دونم، ولی می‌تونی «راهنما» رو بفرستی 📖",
+)
+GENERIC_FALLBACK = (
+    "جانم؟ 👂",
+    "بگو ببینم، گوشم با توئه 😄",
+    "یه کم واضح‌تر بگو که بفهمم 🙂",
+    "متوجه نشدم؛ برای دیدن دستورها «راهنما» رو بفرست 📖",
+    "من حواسم هست، ادامه بده 🫡",
+)
+NAME_ONLY_REPLIES = ("جانم؟ 👂", "بله، در خدمتم ⚡", "بگو، گوشم با توئه 😄", "جانم، بفرما 🫡")
+SASSY_TAILS = (" 😏", " 🙄", " 😂", " 😎")
+SASSY_INTENTS = {"morning", "noon", "evening", "night", "greet", "how", "thanks", "compliment", "identity"}
+
+MENTION_PHRASES = tuple(normalize(x) for x in (
+    "ربات", "بات", "fbi", "اف بی آی", "اف بی ای", "افبیآی", "افبیای", "اف بی",
+))
 
 
-def is_greeting(text: str) -> bool:
-    n = normalize(text)
-    return any(n == p or n.startswith(p + " ") for p in GREETING_PATTERNS)
+# ------------------------------------------------------------------ ایندکس و تطبیق
+_INDEX: list = []
+for _it in INTENTS:
+    for _p in _it.phrases:
+        _np = normalize(_p)
+        if _np:
+            _INDEX.append((_np, _it))
+
+_CONTEXT: dict = {}          # chat -> (intent name, time)
+_LAST_PICK: dict = {}        # (chat, key) -> index
+_LAST_UNSOLICITED: dict = {}  # chat -> time
+
+
+def _find_intent(n: str):
+    padded = f" {n} "
+    words = len(n.split())
+    best, best_key = None, (0, 0)
+    for phrase, it in _INDEX:
+        if it.kind == "followup" and words > 2:
+            continue
+        if f" {phrase} " not in padded:
+            continue
+        key = (len(phrase.split()), len(phrase))
+        if key > best_key:
+            best, best_key = it, key
+    return best
 
 
 def mentions_bot(text: str) -> bool:
-    n = normalize(text)
-    return any(p in n for p in DIRECT_PATTERNS)
+    padded = f" {normalize(text)} "
+    return any(f" {p} " in padded for p in MENTION_PHRASES)
 
 
-def reply_for(text: str) -> str:
-    n = normalize(text)
-    if is_greeting(n):
-        return random.choice(["درود 😎", "به‌به، درود رفیق 👋", "علیک سلام 😄", "درود بر شما 🌹"])
-    if any(x in n for x in ("خوبی", "چطوری", "چه خبر")):
-        return random.choice(["من که سرحالم 😎 تو چه خبر؟", "آنلاین و آماده‌ام 😂 تو چطوری؟"])
-    if any(x in n for x in ("مرسی", "ممنون", "تشکر", "دمت گرم")):
-        return random.choice(["قربانت 😎", "خواهش می‌کنم رفیق ✌️", "مرسی از تو 🌹"])
-    return random.choice(FALLBACK)
+def _pick(chat: str, key: str, options) -> str | None:
+    options = tuple(options)
+    if not options:
+        return None
+    if len(_LAST_PICK) > 10000:
+        _LAST_PICK.clear()
+    last = _LAST_PICK.get((chat, key))
+    choices = [i for i in range(len(options)) if i != last] or [0]
+    idx = random.choice(choices)
+    _LAST_PICK[(chat, key)] = idx
+    return options[idx].replace("{maker}", str(config.MAKER))
 
 
-def _get_client():
-    global _client
-    if _client is None and InferenceClient is not None and config.HF_TOKEN:
-        try:
-            kwargs = {"token": config.HF_TOKEN}
-            if config.HF_PROVIDER:
-                kwargs["provider"] = config.HF_PROVIDER
-            try:
-                _client = InferenceClient(timeout=45, **kwargs)
-            except TypeError:
-                _client = InferenceClient(**kwargs)
-        except Exception:
-            _client = None
-    return _client
+# ------------------------------------------------------------------ محاسبه ساده
+_MATH_HINT = re.compile(r"حاصل|چند میشه|چقدر میشه|چنده|چقدره|=|\?|؟")
+_MATH_WORDS = re.compile(r"حاصل|چقدر می ?شه|چند می ?شه|چقدره|چنده")
+_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
 
 
-def configured() -> bool:
-    return bool(config.HF_TOKEN) and (InferenceClient is not None or _has_requests())
+def _eval_node(node):
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
+        return _OPS[type(node.op)](_eval_node(node.left), _eval_node(node.right))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _eval_node(node.operand)
+        return -value if isinstance(node.op, ast.USub) else value
+    raise ValueError("unsupported expression")
 
 
-def _has_requests() -> bool:
+def _math_reply(raw: str) -> str | None:
+    expr = utils.en_digits(raw).replace("×", "*").replace("÷", "/")
+    expr = re.sub(r"[xX]", "*", expr)
+    expr = _MATH_WORDS.sub(" ", expr).replace("=", " ").replace("؟", " ").replace("?", " ")
+    expr = " ".join(expr.split())
+    if not re.fullmatch(r"[0-9+\-*/(). ]{3,40}", expr):
+        return None
+    if not re.search(r"\d\s*[-+*/]\s*\(?\s*[\d(-]", expr):
+        return None
     try:
-        import requests  # noqa: F401
-        return True
+        value = _eval_node(ast.parse(expr, mode="eval"))
+    except ZeroDivisionError:
+        return "نمیشه بر صفر تقسیم کرد 🙃"
     except Exception:
-        return False
+        return None
+    if isinstance(value, float):
+        value = int(value) if value.is_integer() else round(value, 6)
+    return f"🧮 حاصل: {utils.fa_digits(f'{value:,}')}"
 
 
-def _direct_router_request(messages):
-    """Direct Hugging Face Router fallback for SDK/provider edge cases."""
-    import requests
-    url = "https://router.huggingface.co/v1/chat/completions"
-    payload = {
-        "model": config.HF_MODEL,
-        "messages": messages,
-        "max_tokens": config.HF_MAX_TOKENS,
-        "temperature": config.HF_TEMPERATURE,
-        "stream": False,
-    }
-    response = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {config.HF_TOKEN}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=45,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(f"HF HTTP {response.status_code}: {response.text[:500]}")
-    return response.json()
+# ------------------------------------------------------------------ پاسخ‌گویی
+def _cooldown_ready(ctx, chat: str, now: float) -> bool:
+    cooldown = float(getattr(config, "SPEAKER_COOLDOWN_SECONDS", 8))
+    if ctx.g.get("talkative"):
+        cooldown = min(cooldown, 3.0)
+    return now - _LAST_UNSOLICITED.get(chat, 0.0) >= cooldown
 
 
-def _extract_text(result: Any) -> str:
-    try:
-        if isinstance(result, dict):
-            content = (((result.get("choices") or [{}])[0]).get("message") or {}).get("content")
-        else:
-            content = result.choices[0].message.content
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts = []
-            for x in content:
-                if isinstance(x, dict):
-                    parts.append(str(x.get("text", "")))
-                else:
-                    parts.append(str(x))
-            return " ".join(x for x in parts if x).strip()
-    except Exception:
-        pass
-    return ""
+def _compose(chat: str, intent: Intent, now: float):
+    if intent.kind == "followup":
+        prev = _CONTEXT.get(chat)
+        if not prev or now - prev[1] > 120:
+            return None
+        options = FOLLOWUP_REPLIES.get(prev[0], {}).get(intent.sub) or FOLLOWUP_DEFAULT.get(intent.sub, ())
+        return _pick(chat, f"fu:{prev[0]}:{intent.sub}", options)
+    if intent.kind == "time":
+        return utils.clock_text()
+    if intent.kind == "date":
+        return utils.date_text()
+    if intent.kind == "joke":
+        return _pick(chat, "joke", JOKES)
+    return _pick(chat, intent.name, intent.replies)
+
+
+def _fallback(raw: str, chat: str) -> str | None:
+    if "؟" in raw or "?" in raw:
+        return _pick(chat, "fallback_q", QUESTION_FALLBACK)
+    return _pick(chat, "fallback", GENERIC_FALLBACK)
 
 
 async def reply_target_is_bot(ctx) -> bool:
-    """Resolve whether the current message is replying to FBI itself."""
+    """آیا پیام فعلی به یکی از پیام‌های FBI ریپلای شده است؟"""
     me = str(getattr(ctx, "me", "") or "")
     if not me:
         return False
@@ -199,146 +428,60 @@ async def reply_target_is_bot(ctx) -> bool:
     return False
 
 
-async def should_respond(ctx) -> tuple[bool, bool]:
-    """Return (should_respond, direct_to_bot)."""
-    if not ctx.is_group or not ctx.author or str(ctx.author) == str(ctx.me):
-        return False, False
-    text = ctx.raw_text or ""
+async def answer(ctx) -> str | None:
+    """پاسخ به پیام گروهی؛ اگر پاسخی لازم نیست None برمی‌گرداند."""
+    raw = (ctx.raw_text or "").strip()
+    if not raw or not ctx.is_group or not ctx.author or str(ctx.author) == str(ctx.me):
+        return None
+    n = normalize(raw)
+    if not n:
+        return None
+    words = n.split()
+    chat = str(ctx.guid)
+    now = time.time()
+
     direct = await reply_target_is_bot(ctx)
-    greeting = is_greeting(text)
-    mention = mentions_bot(text)
-    if direct or greeting or mention:
-        return True, direct
-    if ctx.g.get("talkative"):
-        # Talkative mode is intentionally conservative: don't answer obvious commands,
-        # URLs, or long floods as conversational messages.
-        n = normalize(text)
-        if not n or n.startswith(("/", "فعال", "غیرفعال", "قفل ", "سکوت ", "ریپ ", "ری اکت ", "ری‌اکت ")):
-            return False, False
-        return True, False
-    return False, False
+    mention = mentions_bot(n)
+    # نام FBI فقط در پیام‌های کوتاه به معنای خطاب است؛ در جمله‌های بلند فقط ریپلای خطاب حساب می‌شود.
+    addressed = direct or (mention and len(words) <= 6)
 
+    intent = _find_intent(n)
+    if intent is not None and intent.kind == "crisis":
+        return CRISIS_REPLY
 
-def _recent_group_context(guid: str, limit: int = 10) -> list[dict[str, str]]:
-    rows = db.data.get("history", {}).get(str(guid), []) or []
-    out = []
-    for row in rows[-limit:]:
-        if row.get("e"):
-            continue
-        text = str(row.get("text") or row.get("x") or "").strip()
-        if not text:
-            continue
-        uid = str(row.get("u") or "user")
-        out.append({"role": "user", "content": f"کاربر {uid}: {text[:500]}"})
-    return out
+    if addressed or _MATH_HINT.search(raw):
+        math_text = _math_reply(raw)
+        if math_text:
+            return math_text
 
+    # «گفت‌وگوی بدون دستور» (سخنگوی شخصی) خاموش باشد، فقط وقتی خطاب شویم جواب می‌دهیم.
+    if not addressed and not ctx.g.get("ai_chat", True):
+        return None
+    if intent is not None and not addressed:
+        if intent.direct_only or (intent.max_words and len(words) > intent.max_words):
+            intent = None
+    if intent is None and not addressed:
+        return None
+    # پاسخ کوتاهِ کاربر به سؤال خودِ FBI بخشی از گفت‌وگوست و از فاصلهٔ ضدّاسپم معاف است.
+    is_followup = intent is not None and intent.kind == "followup"
+    if not addressed and not is_followup and not _cooldown_ready(ctx, chat, now):
+        return None
 
-async def generate(ctx, *, direct_to_bot: bool = False) -> str:
-    text = (ctx.raw_text or "").strip()
-    if not text:
-        return reply_for(text)
-    if not configured():
-        return reply_for(text)
-
-    key = f"{ctx.guid}:{ctx.author or 'unknown'}"
-    lock = _user_locks.setdefault(key, asyncio.Lock())
-    async with lock:
-        memory_root = db.data.setdefault("ai_memory", {})
-        history = list(memory_root.setdefault(key, []))[-max(2, config.HF_MEMORY_MESSAGES):]
-
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        if direct_to_bot:
-            messages.append({"role": "system", "content": "این پیام مستقیماً در پاسخ به یکی از پیام‌های قبلی FBI BOT است؛ به همان زمینه پاسخ بده."})
-        messages.extend(_recent_group_context(ctx.guid, limit=8))
-        messages.extend(history)
-        messages.append({"role": "user", "content": text[:2500]})
-
-        client = _get_client()
-        if client is None and not _has_requests():
-            return reply_for(text) if not direct_to_bot else "❌ سرویس هوش مصنوعی در دسترس نیست؛ `huggingface_hub` یا `requests` را نصب کنید."
-        try:
-            def do_request():
-                if client is not None:
-                    return client.chat.completions.create(
-                        model=config.HF_MODEL,
-                        messages=messages,
-                        max_tokens=config.HF_MAX_TOKENS,
-                        temperature=config.HF_TEMPERATURE,
-                    )
-                return _direct_router_request(messages)
-
-            result = await asyncio.to_thread(do_request)
-            answer = _extract_text(result)
-            if not answer:
-                return reply_for(text)
-
-            history.extend([
-                {"role": "user", "content": text[:2500]},
-                {"role": "assistant", "content": answer[:3000]},
-            ])
-            memory_root[key] = history[-max(4, config.HF_MEMORY_MESSAGES * 2):]
-            db.save("ai_memory")
-            return answer[:3500]
-        except Exception as exc:
-            try:
-                db.log("ai", f"HF request failed: {type(exc).__name__}: {exc}")
-            except Exception:
-                pass
-            try:
-                result = await asyncio.to_thread(_direct_router_request, messages)
-                answer = _extract_text(result)
-                if answer:
-                    history.extend([
-                        {"role": "user", "content": text[:2500]},
-                        {"role": "assistant", "content": answer[:3000]},
-                    ])
-                    memory_root[key] = history[-max(4, config.HF_MEMORY_MESSAGES * 2):]
-                    db.save("ai_memory")
-                    return answer[:3500]
-            except Exception as fallback_exc:
-                try:
-                    db.log("ai", f"HF router fallback failed: {type(fallback_exc).__name__}: {fallback_exc}")
-                except Exception:
-                    pass
-            return reply_for(text) if not direct_to_bot else "❌ اتصال Hugging Face برقرار نشد؛ خطای دقیق در fbi.log ثبت شد."
-
-
-async def healthcheck() -> tuple[bool, str]:
-    """Non-secret HF connectivity check used by tests/logging."""
-    if not config.HF_TOKEN:
-        return False, "HF token is not configured"
-    if not _has_requests() and InferenceClient is None:
-        return False, "requests/huggingface_hub is missing"
-    try:
-        result = await asyncio.to_thread(_direct_router_request, [
-            {"role": "system", "content": "Reply with exactly OK."},
-            {"role": "user", "content": "OK"},
-        ])
-        return bool(_extract_text(result)), "HF Router reachable"
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-
-
-async def handle(ctx) -> bool:
-    text = ctx.text
-    if text in ("هوش مصنوعی روشن", "هوش مصنوعی فعال"):
-        if ctx.rank < 1:
-            await ctx.err("فقط ادمین می‌تواند هوش مصنوعی را روشن کند.")
-            return True
-        ctx.g["ai_chat"] = True
-        ctx.g["speaker"] = True
-        db.save("groups")
-        if configured():
-            await ctx.ok(f"هوش مصنوعی FBI روشن شد 🤖\nمدل: `{config.HF_MODEL}`\nپاسخ‌گویی رفتاری و Reply فعال است ✅")
+    reply = _compose(chat, intent, now) if intent is not None else None
+    if reply is None:
+        if not addressed:
+            return None
+        if mention and intent is None and len(words) <= 2:
+            reply = _pick(chat, "name_only", NAME_ONLY_REPLIES)
         else:
-            await ctx.ok("هوش مصنوعی روشن شد، ولی `FBI_HF_TOKEN` تنظیم نشده؛ فعلاً حالت محلی اجرا می‌شود.")
-        return True
-    if text in ("هوش مصنوعی خاموش", "هوش مصنوعی غیرفعال"):
-        if ctx.rank < 1:
-            await ctx.err("فقط ادمین می‌تواند هوش مصنوعی را خاموش کند.")
-            return True
-        ctx.g["ai_chat"] = False
-        db.save("groups")
-        await ctx.ok("هوش مصنوعی خاموش شد.")
-        return True
-    return False
+            reply = _fallback(raw, chat)
+    if not addressed:
+        _LAST_UNSOLICITED[chat] = now
+    if intent is not None and intent.kind != "followup":
+        if len(_CONTEXT) > 5000:
+            _CONTEXT.clear()
+        _CONTEXT[chat] = (intent.name, now)
+    if reply and ctx.g.get("sassy") and (intent is None or intent.name in SASSY_INTENTS) and random.random() < 0.4:
+        reply += random.choice(SASSY_TAILS)
+    return reply
+
