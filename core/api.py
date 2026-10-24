@@ -1991,6 +1991,36 @@ class API:
         )
         return snapshot
 
+    async def group_dialogs(self, limit=1000):
+        """گفتگوهای گروهی حساب (گروه و سوپرگروه؛ بدون کانال پخش و بدون چت خصوصی).
+
+        call() فقط wrapper عمومی را نگاه می‌کند و get_chats/get_groups در بعضی buildها وجود ندارد،
+        پس فهرست کامل از get_dialogs روی client خام گرفته می‌شود (همان روشی که _warm_dialogs_once دارد).
+        """
+        raw = getattr(self.client, "_client", None)
+        getter = getattr(raw, "get_dialogs", None) if raw is not None else None
+        if not callable(getter):
+            return []
+        try:
+            rows = getter(limit=limit)
+            if inspect.isawaitable(rows):
+                rows = await rows
+        except Exception as exc:
+            log.warning("get_dialogs failed: %s", exc)
+            return []
+        rows = list(rows or [])
+        groups = []
+        for dialog in rows:
+            entity = _val(dialog, "entity", default=None)
+            if _val(entity, "broadcast", default=False) is True:
+                continue
+            is_group = _val(dialog, "is_group", default=False) is True
+            is_megagroup = _val(entity, "megagroup", default=False) is True
+            if (is_group or is_megagroup) and _val(dialog, "id", default=None) is not None:
+                groups.append(dialog)
+        log.info("group dialogs: %d groups among %d dialogs", len(groups), len(rows))
+        return groups
+
     async def is_channel_member(self, channel_guid, user_guid, *, fresh=True):
         """بررسی عضویت با چند مسیر واقعی؛ از false-negative برای عضو عادی جلوگیری می‌کند."""
         if not channel_guid or user_guid is None:

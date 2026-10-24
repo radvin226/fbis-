@@ -1151,8 +1151,8 @@ BOT_JOIN_ADMIN_REQUEST = "🕵️ من FBI هستم، منو ادمین کن"
 
 
 async def _fetch_chat_objects():
-    """فهرست خام گفتگوها (گروه و خصوصی) از SplusLib؛ خطای هر منبع نادیده گرفته می‌شود."""
-    chats = []
+    """فهرست گفتگوها: اول فهرست کامل گروه‌ها از SplusLib، بعد منبع‌های قدیمی‌تر."""
+    chats = list(await api.group_dialogs())
     for name, kwargs in (("get_chats", {"limit": config.AUTO_ACTIVATION_MAX_CHATS}), ("get_groups", {})):
         fn = getattr(app, name, None)
         if not callable(fn):
@@ -1178,7 +1178,7 @@ async def _known_group_guids():
             found[str(guid)] = True
     for chat in await _fetch_chat_objects():
         cid = api_mod.guid_of(chat) or _get(chat, "chat_id", "peer_id", default=None)
-        if cid is not None and str(cid).startswith("-"):
+        if cid is not None and str(cid).startswith("-") and str(cid) != str(getattr(config, "FORCE_JOIN_CHANNEL_ID", "")):
             found[str(cid)] = True
     return list(found)
 
@@ -1288,7 +1288,8 @@ async def owner_global_activate(ctx, body="فعال"):
     body = str(body or "فعال").strip()
     text = "📢 اطلاع‌رسانی FBI\n\n" + body
     stats = {"sent": 0, "activated": 0, "already": 0, "not_admin": 0, "no_sub": 0, "failed": 0}
-    for guid in await _known_group_guids():
+    known = await _known_group_guids()
+    for guid in known:
         g = db.group(guid)
         if not subscription.allowed(guid):
             stats["no_sub"] += 1
@@ -1321,6 +1322,7 @@ async def owner_global_activate(ctx, body="فعال"):
             log.warning("global activation failed chat=%s: %s", guid, exc)
     await ctx.reply(
         "🕵️ اطلاع‌رسانی سراسری «فعال»\n"
+        f"🔎 گروه‌های شناسایی‌شده: {utils.fa_digits(len(known))}\n"
         f"📨 ارسال شد: {utils.fa_digits(stats['sent'])}\n"
         f"✅ فعال شد: {utils.fa_digits(stats['activated'])}\n"
         f"🟢 از قبل فعال: {utils.fa_digits(stats['already'])}\n"
