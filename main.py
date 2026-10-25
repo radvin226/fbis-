@@ -602,6 +602,8 @@ OWNER_HELP = """```text
 • زیرپرچم من / لغو زیرپرچم
 • فعال سازی سراسری
 • اطلاع رسانی شامل «فعال» = فعال سازی سراسری
+• عضویت مالکان
+• وضعیت عضویت مالکان
 
 سازنده FBI:
 • `56597421`
@@ -610,6 +612,7 @@ OWNER_HELP = """```text
 • هدیه اشتراک سراسری [روز]
 • هدیه اشتراک تکی [آیدی گروه] [روز]
 • لغو اشتراک
+• لغو اشتراک [آیدی گروه]
 
 تمدید اشتراک:
 1) تمدید اشتراک [آیدی گروه]
@@ -998,6 +1001,8 @@ async def force_join_ok(ctx):
 
 
 async def handle_private(ctx):
+    if await owner_campaign_confirm(ctx):
+        return
     if not await force_join_ok(ctx):
         return
     if _private_owner(ctx.author):
@@ -1022,6 +1027,16 @@ async def handle_private(ctx):
             return
         if utils.compact(ctx.text) == utils.compact("فعال سازی سراسری"):
             await owner_global_activate(ctx)
+            return
+        if utils.compact(ctx.text) == utils.compact("عضویت مالکان"):
+            await owner_campaign_start(ctx)
+            return
+        if utils.compact(ctx.text) == utils.compact("وضعیت عضویت مالکان"):
+            await owner_campaign_status(ctx)
+            return
+        m_cancel = re.fullmatch(r"لغو اشتراک\s+(-?\d+)", ctx.text)
+        if m_cancel:
+            await cancel_group_command(ctx, m_cancel.group(1))
             return
         if ctx.text == "هدیه اشتراک سراسری":
             subscription.mark_gift_all_pending(ctx.author)
@@ -1193,6 +1208,222 @@ async def admin_watch_once():
         log.info("FBI left chat=%s after the no-admin period", guid)
 
 
+# ------------------------------------------------------------ کمپین عضویت مالکان
+CAMPAIGN_JOIN_LINKS = ("https://splus.ir/Fbibotgrup", "https://splus.ir/FBIbotdd")
+
+
+def _campaign():
+    camp = db.data.get("campaign")
+    if not isinstance(camp, dict):
+        camp = db.data["campaign"] = {}
+    return camp
+
+
+def _campaign_left_text(camp):
+    left = max(0.0, float(camp.get("deadline") or 0) - time.time())
+    days = int(left // 86400)
+    hours = int((left % 86400) // 3600)
+    return f"{utils.fa_digits(days)} روز و {utils.fa_digits(hours)} ساعت"
+
+
+def _creator_ids():
+    return [str(x) for x in getattr(config, "CREATOR_IDS", ()) if str(x)]
+
+
+async def _group_link_or_none(guid):
+    try:
+        data = await api.group_link(guid)
+        return str((data or {}).get("link") or "") or None
+    except Exception:
+        return None
+
+
+def _campaign_message(guids, groups):
+    lines = [
+        "📢 اطلاع‌رسانی عضویت مالکان FBI",
+        "",
+        "شما مالک گروه(های) زیر هستید که FBI در آن‌ها فعال است:",
+    ]
+    for guid in guids:
+        info = groups.get(guid, {})
+        lines.append(f"• {info.get('title') or guid}: {info.get('link') or 'لینک در دسترس نیست'}")
+    lines += [
+        "",
+        f"برای ادامهٔ فعالیت FBI، تا {utils.fa_digits(config.OWNER_CAMPAIGN_DAYS)} روز آینده در گروه‌های عضویت اجباری عضو شوید:",
+        f"گروه حل مشکلات: {CAMPAIGN_JOIN_LINKS[0]}",
+        f"اطلاع‌رسانی: {CAMPAIGN_JOIN_LINKS[1]}",
+        "",
+        "⏳ پس از عضویت، روی همین پیام ریپلای بزنید و بنویسید: عضو شدم",
+        "⚠️ اگر تا پایان مهلت عضو نشوید، FBI در گروه(های) شما غیرفعال می‌شود.",
+    ]
+    return "\n".join(lines)
+
+
+async def _send_chunks(target, text, limit=3500):
+    chunk = ""
+    for row in text.split("\n"):
+        if chunk and len(chunk) + len(row) + 1 > limit:
+            await api.send(target, chunk.rstrip())
+            chunk = ""
+        chunk += row + "\n"
+    if chunk.strip():
+        await api.send(target, chunk.rstrip())
+
+
+async def owner_campaign_start(ctx):
+    camp = _campaign()
+    if camp.get("status") == "running":
+        await ctx.reply(
+            f"⏳ کمپین عضویت مالکان در جریان است. مهلت باقی‌مانده: {_campaign_left_text(camp)}\n"
+            "وضعیت: «وضعیت عضویت مالکان»",
+            reply=False,
+        )
+        return
+    excluded = {str(x) for x in config.SUDOS} | {str(ME.get("guid") or "")}
+    owners, groups = {}, {}
+    not_admin = unknown_owner = 0
+    now = time.time()
+    for guid in await _known_group_guids():
+        g = db.group(guid)
+        try:
+            if not await api.is_admin(guid, ME["guid"], fresh=True):
+                not_admin += 1
+                continue
+            owner, _admins, _members = await admin.fetch_admins(SimpleNamespace(guid=guid, api=api, g=g))
+        except Exception as exc:
+            log.debug("campaign owner lookup failed chat=%s: %s", guid, exc)
+            owner = None
+        if not owner or str(owner) in excluded:
+            unknown_owner += 1
+            continue
+        owner = str(owner)
+        groups[guid] = {"owner": owner, "title": str(g.get("title") or ""), "link": await _group_link_or_none(guid)}
+        owners.setdefault(owner, {"groups": [], "msg_id": "", "sent": False, "confirmed_at": 0})["groups"].append(guid)
+    sent = failed = 0
+    for owner, info in owners.items():
+        try:
+            res = await api.send(owner, _campaign_message(info["groups"], groups))
+            if res is None:
+                failed += 1
+                continue
+            info["msg_id"] = str(api.result_message_id(res) or "")
+            info["sent"] = True
+            sent += 1
+        except Exception as exc:
+            failed += 1
+            log.warning("campaign message failed owner=%s: %s", owner, exc)
+    camp.clear()
+    camp.update({
+        "status": "running", "started_at": now,
+        "deadline": now + float(config.OWNER_CAMPAIGN_DAYS) * 86400,
+        "owners": owners, "groups": groups,
+    })
+    db.save("campaign")
+    db.log("campaign", f"started owners={len(owners)} sent={sent} failed={failed}")
+    log.info("owner campaign started owners=%d sent=%d failed=%d", len(owners), sent, failed)
+    await ctx.reply(
+        "📢 کمپین عضویت مالکان شروع شد\n"
+        f"👤 مالک شناسایی‌شده: {utils.fa_digits(len(owners))}\n"
+        f"📨 پیام ارسال‌شده: {utils.fa_digits(sent)}\n"
+        f"❌ ارسال ناموفق: {utils.fa_digits(failed)}\n"
+        f"🛡 گروهی که FBI ادمین نیست: {utils.fa_digits(not_admin)}\n"
+        f"❔ گروهی که مالکش مشخص نشد: {utils.fa_digits(unknown_owner)}\n"
+        f"⏳ مهلت: {utils.fa_digits(config.OWNER_CAMPAIGN_DAYS)} روز",
+        reply=False,
+    )
+
+
+async def owner_campaign_status(ctx):
+    camp = _campaign()
+    owners = camp.get("owners") or {}
+    if not owners:
+        await ctx.reply("ℹ️ هنوز کمپینی اجرا نشده است.", reply=False)
+        return
+    confirmed = sum(1 for info in owners.values() if info.get("confirmed_at"))
+    running = camp.get("status") == "running"
+    text = (
+        f"وضعیت کمپین: {'در جریان' if running else 'بسته‌شده'}\n"
+        f"👤 مالک: {utils.fa_digits(len(owners))}\n"
+        f"✅ تأیید شده: {utils.fa_digits(confirmed)}\n"
+        f"⏳ تأیید نشده: {utils.fa_digits(len(owners) - confirmed)}"
+    )
+    if running:
+        text += f"\n⌛ مهلت باقی‌مانده: {_campaign_left_text(camp)}"
+    await ctx.reply(text, reply=False)
+
+
+async def owner_campaign_confirm(ctx):
+    """مالک گروه بعد از عضویت «عضو شدم» را می‌نویسد. عضویتش بررسی نمی‌شود."""
+    uid = str(ctx.author or "")
+    camp = _campaign()
+    info = (camp.get("owners") or {}).get(uid)
+    if not info or utils.compact(ctx.text) != utils.compact("عضو شدم"):
+        return False
+    if camp.get("status") != "running" or time.time() >= float(camp.get("deadline") or 0):
+        await ctx.reply("⏰ مهلت عضویت تمام شده است. برای فعال‌سازی دوباره با سازندهٔ FBI تماس بگیرید.", reply=False)
+        return True
+    if not info.get("confirmed_at"):
+        info["confirmed_at"] = time.time()
+        db.save("campaign")
+        db.user(uid)["force_join_ok"] = True
+        db.save("users")
+        for guid in info.get("groups", []):
+            try:
+                await api.send(guid, "✅ مالک این گروه اعلام کرد که عضو گروه‌های عضویت اجباری شده است.")
+            except Exception as exc:
+                log.debug("owner confirmation notice failed chat=%s: %s", guid, exc)
+    await ctx.reply("✅ ثبت شد. ممنون؛ FBI در گروه(های) شما فعال می‌ماند.", reply=False)
+    return True
+
+
+async def owner_campaign_tick():
+    """بعد از مهلت: گروه‌های مالکانِ تأیید‌نشده غیرفعال می‌شوند و گزارش به سازنده می‌رود."""
+    camp = _campaign()
+    if camp.get("status") != "running" or time.time() < float(camp.get("deadline") or 0):
+        return
+    missed = []
+    for owner, info in (camp.get("owners") or {}).items():
+        if info.get("confirmed_at"):
+            continue
+        missed.append(owner)
+        for guid in info.get("groups", []):
+            g = db.group(guid)
+            g["active"] = False
+            g["manual_disabled"] = True
+            db.save("groups")
+            try:
+                await api.send(guid, "⏰ مهلت عضویت مالک این گروه تمام شد و FBI غیرفعال شد.")
+            except Exception as exc:
+                log.debug("deadline notice failed chat=%s: %s", guid, exc)
+    camp["status"] = "closed"
+    camp["closed_at"] = time.time()
+    db.save("campaign")
+    lines = ["⏰ مهلت عضویت مالکان تمام شد."]
+    if not missed:
+        lines.append("✅ همهٔ مالکان عضو شدند.")
+    else:
+        lines.append(f"❌ مالکانی که عضو نشدند ({utils.fa_digits(len(missed))}) و گروه‌هایشان غیرفعال شد:")
+        for owner in missed:
+            for guid in camp["owners"][owner].get("groups", []):
+                info = camp.get("groups", {}).get(guid, {})
+                link = info.get("link") or await _group_link_or_none(guid) or "لینک در دسترس نیست"
+                lines.append(f"• ایدی مالک: {owner}\n  گروه: {info.get('title') or guid}\n  لینک: {link}")
+    db.log("campaign", f"closed missed={len(missed)}")
+    for cid in _creator_ids():
+        try:
+            await _send_chunks(cid, "\n".join(lines))
+        except Exception as exc:
+            log.warning("campaign report failed: %s", exc)
+
+
+async def cancel_group_command(ctx, guid):
+    if str(guid) not in db.data.get("groups", {}):
+        await ctx.reply("گروهی با این شناسه پیدا نشد. شناسه را دقیق بفرستید؛ مثال: لغو اشتراک -1000024311028", reply=False)
+        return
+    title = await subscription.cancel_one(api, str(guid))
+    await ctx.reply(f"✅ اشتراک گروه «{title}» لغو شد و FBI در آن غیرفعال شد.\nشناسه: {guid}", reply=False)
+
+
 async def admin_watch_loop():
     await asyncio.sleep(60)
     while True:
@@ -1202,6 +1433,12 @@ async def admin_watch_loop():
             raise
         except Exception as exc:
             log.debug("admin watch loop failed: %s", exc)
+        try:
+            await owner_campaign_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("owner campaign tick failed: %s", exc)
         await asyncio.sleep(max(60, int(getattr(config, "ADMIN_WATCH_INTERVAL_SECONDS", 600))))
 
 

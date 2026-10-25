@@ -13,7 +13,7 @@ import time
 
 import config
 
-FILES = ("groups", "users", "logs", "learn", "backups", "history", "stats", "ai_memory")
+FILES = ("groups", "users", "logs", "learn", "backups", "history", "stats", "ai_memory", "campaign")
 
 
 class DB:

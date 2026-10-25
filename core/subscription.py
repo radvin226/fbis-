@@ -99,6 +99,32 @@ def group_deactivation_message(guid: str) -> str:
     )
 
 
+async def cancel_one(api, guid: str) -> str:
+    """لغو اشتراک یک گروه مشخص؛ همان اثر دکمهٔ «لغو» در پنل وب. برمی‌گرداند: عنوان گروه."""
+    gid = str(guid)
+    g = db.group(gid)
+    now = time.time()
+    g["subscription_active"] = False
+    g["subscription_until"] = 0
+    g["subscription_revoked_at"] = now
+    g["subscription_notice_sent_at"] = now
+    g["active"] = False
+    g["manual_disabled"] = True
+    g["subordinate"] = False
+    db.save("groups")
+    try:
+        voice_id = await api.active_voice_id(gid)
+        if voice_id:
+            await api.voice_discard(gid, voice_id)
+    except Exception:
+        pass
+    try:
+        await api.send(gid, group_deactivation_message(gid))
+    except Exception:
+        pass
+    return str(g.get("title") or gid)
+
+
 async def cancel_all(api, *, include_inactive=False):
     """لغو سراسری همه گروه‌ها به جز زیرپرچم‌ها."""
     changed = 0
