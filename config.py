@@ -142,11 +142,6 @@ FORCE_JOIN_CHANNEL_LINK = "https://splus.ir/FBIbotdd"
 FORCE_JOIN_CHANNEL_ID = "-10024639591"
 FORCE_JOIN_CACHE_SECONDS = 5
 FORCE_JOIN_REQUIRE_BOT_ADMIN = True
-# هر مورد: نام، لینک برای نمایش، و مرجع‌هایی که عضویت با آن‌ها بررسی می‌شود (یکی کافی است).
-FORCE_JOIN_TARGETS = (
-    {"label": "گروه حل مشکلات", "link": "https://splus.ir/Fbibotgrup", "refs": ("@Fbibotgrup",)},
-    {"label": "اطلاع‌رسانی", "link": FORCE_JOIN_CHANNEL_LINK, "refs": (FORCE_JOIN_CHANNEL_ID, "@FBIbotdd")},
-)
 FORCE_JOIN_SUPPORT = "@Radvinhha"  # فقط نمایش داده می‌شود؛ عضویت در یک کاربر قابل بررسی نیست.
 
 # ========================= گزارش پیام =========================

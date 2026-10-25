@@ -965,7 +965,6 @@ async def _owner_announcement(ctx):
     return True
 
 
-_FORCE_JOIN_CACHE = {}
 FORCE_JOIN_TEXT = (
     "باسلام لطفا برای دریافت اطلاعات و دریافت بات اختصاصی رایگان باید عضو گروه های زیر باشید\n"
     "گروه حل مشکلات؛ https://splus.ir/Fbibotgrup\n"
@@ -975,56 +974,26 @@ FORCE_JOIN_TEXT = (
 )
 
 
-def _force_join_text(missing=()):
-    text = FORCE_JOIN_TEXT
-    if missing:
-        text += "\n\n❌ هنوز عضو این‌ها نشده‌اید: " + "، ".join(missing)
-    return text
-
-
-async def _missing_force_join(uid, *, fresh=True):
-    """برچسب مواردی که کاربر در آن‌ها عضو نیست. هر مورد با یکی از مرجع‌هایش بررسی می‌شود."""
-    missing = []
-    for target in config.FORCE_JOIN_TARGETS:
-        found = False
-        for ref in target["refs"]:
-            try:
-                if await api.is_channel_member(ref, uid, fresh=fresh):
-                    found = True
-                    break
-            except Exception as exc:
-                log.debug("force join check failed ref=%s user=%s: %r", ref, uid, exc)
-        if not found:
-            missing.append(target["label"])
-    return missing
-
-
 async def force_join_ok(ctx):
-    """کاربر عادی در PV تا عضو همهٔ موارد اجباری نشده، پیامش پردازش نمی‌شود."""
+    """کاربر عادی در PV: تا وقتی «عضو شدم» ننوشته، پیامش پردازش نمی‌شود.
+
+    عضویت در گروه/کانال بررسی نمی‌شود (در این بیلد SplusLib قابل اعتماد نیست)؛
+    با نوشتن «عضو شدم» کاربر تأیید می‌شود و این تأیید بعد از ری‌استارت هم می‌ماند.
+    """
     if not getattr(config, "FORCE_JOIN_ENABLED", False) or _private_owner(ctx.author):
         return True
     uid = str(ctx.author or "")
     if not uid:
         return False
-    if utils.compact(ctx.text) == utils.compact("عضو شدم"):
-        missing = await _missing_force_join(uid, fresh=True)
-        _FORCE_JOIN_CACHE.pop(uid, None)
-        if missing:
-            await ctx.reply(_force_join_text(missing), reply=False)
-        else:
-            await ctx.reply("✅ عضویت شما تأیید شد. حالا می‌توانید از FBI استفاده کنید.", reply=False)
-        return False
-    now = time.monotonic()
-    cached = _FORCE_JOIN_CACHE.get(uid)
-    ttl = max(0.0, float(getattr(config, "FORCE_JOIN_CACHE_SECONDS", 5)))
-    if cached and now - float(cached.get("t") or 0) < ttl:
-        missing = cached.get("missing") or []
-    else:
-        missing = await _missing_force_join(uid, fresh=True)
-        _FORCE_JOIN_CACHE[uid] = {"t": now, "missing": missing}
-    if not missing:
+    user = db.user(uid)
+    if user.get("force_join_ok"):
         return True
-    await ctx.reply(_force_join_text(missing), reply=False)
+    if utils.compact(ctx.text) == utils.compact("عضو شدم"):
+        user["force_join_ok"] = True
+        db.save("users")
+        await ctx.reply("✅ ثبت شد. حالا می‌توانید از FBI استفاده کنید.", reply=False)
+        return False
+    await ctx.reply(FORCE_JOIN_TEXT, reply=False)
     return False
 
 
