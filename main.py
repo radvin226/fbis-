@@ -18,7 +18,7 @@ from core import msgstyle, ranks, splash, utils, subscription
 from core.api import API
 from core.context import Ctx, make_update
 from core.db import db
-from modules import admin, beauty, fun, group_tools, lists, locks, media, misc, stats, timers, v2_features, guide, reports, advanced
+from modules import admin, beauty, fun, group_tools, lists, locks, media, misc, panel_bot, stats, timers, v2_features, guide, reports, advanced
 import webpanel
 
 try:
@@ -1810,6 +1810,7 @@ async def boot():
     asyncio.create_task(db_flush_loop())
     _BOT_TASK = asyncio.create_task(auto_activation_loop())
     asyncio.create_task(admin_watch_loop())
+    panel_bot.start(api, log)
     asyncio.create_task(timers.run_timers(dispatch))
     asyncio.create_task(group_unlock_loop())
 

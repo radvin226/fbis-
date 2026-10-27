@@ -60,11 +60,12 @@ SPLUSLIB_MIN_VERSION = "4.7.13-REPLY-FINAL-FIX"
 # شناسه حساب خود FBI بعد از ورود؛ خودکار در boot تنظیم می‌شود.
 # اگر متغیر محیطی خالی باشد، شناسه‌ی پیش‌فرض «سودو بات» استفاده می‌شود.
 BOT_GUID = os.getenv("FBI_BOT_GUID", "").strip() or "62989530"
+PANEL_BOT_TOKEN = os.getenv("FBI_PANEL_BOT_TOKEN", "").strip()  # توکن بات پنل مالکان (از splus.ir/botfather)
 
 # ========================= برند =========================
 BOT_NAME = "FBI SPLUS"
 MAKER = "رادوین"
-VERSION = "4.7.46-GLOBAL"
+VERSION = "4.7.47-PANEL"
 
 # شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید. (فقط یک سازنده: 56597421)
 # شناسه‌های قدیمی Rubika (مثل u...) در این نسخه معتبر نیستند.
