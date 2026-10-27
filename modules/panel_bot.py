@@ -249,7 +249,7 @@ class PanelBot:
             await self.bot.delete_webhook()
         except Exception as exc:
             self.log.warning("panel bot could not start: %s", exc)
-            return
+            return False
         self.log.info("panel bot started: @%s", (self.me or {}).get("username", "?"))
         backoff = 3
         while True:
@@ -264,9 +264,31 @@ class PanelBot:
                 backoff = min(60, backoff * 2)
 
 
+_TASKS = []
+RESTART_DELAY = 15
+
+
+async def _supervise(token, splus_api, log):
+    """بات پنل را نگه می‌دارد: اگر غیرمنتظره متوقف شود، بعد از چند ثانیه دوباره راه می‌افتد."""
+    while True:
+        bot = PanelBot(BotApi(token), splus_api, log=log)
+        try:
+            if await bot.run() is False:
+                return  # توکن یا شروع اولیه مشکل دارد؛ تکرار فایده ندارد
+            log.warning("panel bot loop ended unexpectedly; restarting in %ss", RESTART_DELAY)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # فقط نوع خطا ثبت می‌شود تا توکن (اگر در پیام خطا باشد) در لاگ نیفتد.
+            log.warning("panel bot crashed (%s); restarting in %ss", type(exc).__name__, RESTART_DELAY)
+        await asyncio.sleep(RESTART_DELAY)
+
+
 def start(splus_api, log):
     token = str(getattr(config, "PANEL_BOT_TOKEN", "") or "").strip()
     if not token:
         log.info("panel bot is disabled (FBI_PANEL_BOT_TOKEN is empty)")
         return None
-    return asyncio.create_task(PanelBot(BotApi(token), splus_api, log=log).run())
+    task = asyncio.create_task(_supervise(token, splus_api, log))
+    _TASKS.append(task)  # نگه داشتن مرجع: بدون آن تسک ممکن است در میانهٔ کار از بین برود
+    return task

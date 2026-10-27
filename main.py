@@ -1131,6 +1131,7 @@ async def handle_private(ctx):
     ]), "🕵️"))
 
 
+_BG_TASKS = []  # مرجع تسک‌های پس‌زمینه؛ بدون مرجع ممکن است تسک در میانهٔ کار از بین برود
 BOT_JOIN_ADMIN_REQUEST = "🕵️ من FBI هستم، منو ادمین کن"
 
 
@@ -1809,7 +1810,7 @@ async def boot():
     _atexit.register(db.flush)
     asyncio.create_task(db_flush_loop())
     _BOT_TASK = asyncio.create_task(auto_activation_loop())
-    asyncio.create_task(admin_watch_loop())
+    _BG_TASKS.append(asyncio.create_task(admin_watch_loop()))
     panel_bot.start(api, log)
     asyncio.create_task(timers.run_timers(dispatch))
     asyncio.create_task(group_unlock_loop())
