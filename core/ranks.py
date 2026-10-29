@@ -5,19 +5,27 @@ from core.db import db
 
 USER = 0
 ADMIN = 1
+RESPONSIVE_ADMIN = 1.5  # ادمین پاسخگوی ربات: مثل ادمین عمل می‌کند؛ بین ادمین و ادمین ویژه
 SPECIAL = 2
-ZAROOSH = 2.5  # زروش (ادمین سازنده): بین ادمین ویژه و مالک؛ دسترسی‌های PV سازنده را ندارد
 OWNER = 3
 CREATOR = 4
 BOT = 5
 
-NAMES = {USER: "کاربر", ADMIN: "ادمین", SPECIAL: "ادمین ویژه", ZAROOSH: "زروش", OWNER: "مالک", CREATOR: "سازنده", BOT: "سلطان / FBI"}
+NAMES = {USER: "کاربر", ADMIN: "ادمین", RESPONSIVE_ADMIN: "ادمین پاسخگوی ربات", SPECIAL: "ادمین ویژه",
+         OWNER: "مالک", CREATOR: "سازنده", BOT: "سلطان / FBI"}
 
 
 def name(level):
     if level in NAMES:
         return NAMES[level]
     return NAMES.get(int(level), "کاربر")
+
+
+def rank_label(uid, level):
+    """نام مقام به‌همراه اسم اختصاصی کاربر (مثلاً ادمین پاسخگوی ربات (زروش))."""
+    base = name(level)
+    nickname = {str(k): v for k, v in (getattr(config, "NICKNAMES", {}) or {}).items()}.get(str(uid))
+    return f"{base} ({nickname})" if nickname else base
 
 
 def rank(guid, user_guid):
@@ -28,8 +36,6 @@ def rank(guid, user_guid):
         return BOT
     if uid in {str(x) for x in getattr(config, "CREATOR_IDS", getattr(config, "SUDOS", []))}:
         return CREATOR
-    if uid in {str(x) for x in getattr(config, "CREATOR_ADMIN_IDS", ())}:
-        return ZAROOSH  # زروش: مقامی جدا از مالک و سازنده
     g = db.group(str(guid)) if guid else {}
     # Both the real SPLUS group owner and a manually assigned FBI owner
     # are OWNER-level inside the bot. A manual owner must never demote the
@@ -43,6 +49,8 @@ def rank(guid, user_guid):
         return OWNER
     if uid in {str(x) for x in g.get("specials", [])}:
         return SPECIAL
+    if uid in {str(x) for x in getattr(config, "RESPONSIVE_ADMIN_IDS", ())}:
+        return RESPONSIVE_ADMIN
     if uid in {str(x) for x in g.get("admins", [])}:
         return ADMIN
     return USER

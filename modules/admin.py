@@ -279,7 +279,7 @@ async def handle(ctx) -> bool:
         return True
 
     if text in ("مقامم", "مقام من"):
-        await ctx.reply(f"🎖 مقام شما: {ranks.name(ctx.rank)}")
+        await ctx.reply(f"🎖 مقام شما: {ranks.rank_label(ctx.author, ctx.rank)}")
         return True
     if _is_rank_query(text):
         target = await ctx.target()
@@ -295,7 +295,7 @@ async def handle(ctx) -> bool:
                     level = ranks.ADMIN
             except Exception:
                 pass
-        await ctx.reply(f"🎖 مقام {await ctx.target_link(target)}: {ranks.name(level)}")
+        await ctx.reply(f"🎖 مقام {await ctx.target_link(target)}: {ranks.rank_label(target, level)}")
         return True
 
     if text in ("داشبورد", "تنظیمات"):
