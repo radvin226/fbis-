@@ -812,8 +812,7 @@ async def _ad_targets():
         if sid in {str(x) for x in config.SUDOS} or sid == str(ME.get("guid")):
             continue
         users.append(sid)
-    groups = [str(gid) for gid, gg in db.data.get("groups", {}).items()
-              if gg.get("active") and not gg.get("manual_disabled")]
+    groups = [str(gid) for gid in await _known_group_guids()]  # اطلاع‌رسانی همه جا
     return list(dict.fromkeys(users)), list(dict.fromkeys(groups))
 
 
@@ -1132,7 +1131,7 @@ async def handle_private(ctx):
 
 
 _BG_TASKS = []  # مرجع تسک‌های پس‌زمینه؛ بدون مرجع ممکن است تسک در میانهٔ کار از بین برود
-BOT_JOIN_ADMIN_REQUEST = "🕵️ من FBI هستم، منو ادمین کن"
+BOT_JOIN_ADMIN_REQUEST = "🕵️ منو ادمین کنید، من FBI هستم"
 
 
 async def _fetch_chat_objects():
@@ -1444,18 +1443,28 @@ async def admin_watch_loop():
 
 
 async def _on_bot_joined(chat_id, g, is_admin):
-    """FBI به گروه اضافه شد: اگر ادمین نیست درخواست ادمین شدن می‌دهد و لینک گروه را می‌فرستد."""
+    """FBI به گروه اضافه شد یا دوباره از طریق لینک وارد شد؛ پیام مناسب را می‌فرستد."""
     now = time.time()
+    already = bool(g.get("joined_at") or g.get("last_admin_at") or g.get("active"))
     g["joined_at"] = now
     g["last_admin_at"] = now
     g["left_at"] = 0
     g["_bot_admin"] = bool(is_admin)
     db.save("groups")
-    if not is_admin and not g.get("active"):
+    messages = []
+    if already:
+        messages.append("✅ من از قبل عضوم.")
+        if is_admin:
+            messages.append("🤖 فعالم ✅")
+        else:
+            messages.append("❌ فعال نیستم، ادمینم نکردی. منو ادمین کنید، من FBI هستم.")
+    elif not is_admin:
+        messages.append(BOT_JOIN_ADMIN_REQUEST)
+    for text in messages:
         try:
-            await api.send(chat_id, BOT_JOIN_ADMIN_REQUEST)
+            await api.send(chat_id, text)
         except Exception as exc:
-            log.debug("join request send failed chat=%s: %s", chat_id, exc)
+            log.debug("join message failed chat=%s: %s", chat_id, exc)
     try:
         link = str((await api.group_link(chat_id)).get("link") or "")
     except Exception:
@@ -1489,8 +1498,8 @@ def _activation_announcement(raw):
 async def owner_global_activate(ctx, body="فعال"):
     """اطلاع‌رسانی سراسری با کلمهٔ «فعال».
 
-    متن به همهٔ گروه‌هایی می‌رود که FBI در آن ادمین است (حتی غیرفعال‌ها). در هر گروهِ غیرفعال،
-    خودِ FBI با همان پیام اطلاع‌رسانی فعال می‌شود، بدون پیام جدا و بدون کارت فعال‌سازی، و می‌نویسد «من فعالم».
+    متن به همهٔ گروه‌های شناخته‌شده می‌رود (حتی جایی که FBI ادمین نیست). در گروهی که FBI ادمین است
+    و غیرفعال مانده، خودِ FBI با همان پیام فعال می‌شود و می‌نویسد «من فعالم».
     """
     body = str(body or "فعال").strip()
     text = "📢 اطلاع‌رسانی FBI\n\n" + body
@@ -1502,12 +1511,25 @@ async def owner_global_activate(ctx, body="فعال"):
             stats["no_sub"] += 1
             continue
         try:
-            if not await api.is_admin(guid, ME["guid"], fresh=True):
-                stats["not_admin"] += 1
-                continue
+            is_admin = await api.is_admin(guid, ME["guid"], fresh=True)
+        except Exception as exc:
+            log.debug("global activation admin check failed chat=%s: %s", guid, exc)
+            is_admin = False
+        try:
             sent = await api.send(guid, text)
+        except Exception as exc:
+            stats["failed"] += 1
+            log.warning("global announcement failed chat=%s: %s", guid, exc)
+            continue
+        if sent is None:
+            stats["failed"] += 1
+            continue
+        stats["sent"] += 1
+        if not is_admin:
+            stats["not_admin"] += 1
+            continue
+        try:
             mid = api.result_message_id(sent)
-            stats["sent"] += 1
             if g.get("active") and not g.get("manual_disabled"):
                 stats["already"] += 1
             else:
@@ -1605,6 +1627,8 @@ async def dispatch(message, *, edited=False, internal=False):
             log.debug("message entity priming failed: %s", exc)
     update = make_update(message, edited=edited)
     ctx = Ctx(app, api, update, ME["guid"])
+    if str(ctx.author or "") in {str(x) for x in getattr(config, "SILENT_USER_IDS", ())}:
+        return  # این کاربران هیچ پاسخی از FBI نمی‌گیرند
     # SplusLib exposes ``is_private`` on every Message.  Keep this explicit
     # flag authoritative so incoming DMs always reach handle_private().
     if _get(message, "is_private", default=None) is True:

@@ -81,6 +81,44 @@ def group_view(gid, g):
     return text, markup
 
 
+MAX_STEPS = (1, 2, 3, 5, 10)
+
+
+def _silenced(uid):
+    return str(uid) in {str(x) for x in getattr(config, "SILENT_USER_IDS", ())}
+
+
+def _lock_warn(g, key):
+    return bool((g.get("lock_warn") or {}).get(key, True))
+
+
+def _lock_ban(g, key):
+    return bool((g.get("lock_ban") or {}).get(key, True))
+
+
+def _lock_max(g, key):
+    return int((g.get("lock_max_warn") or {}).get(key) or g.get("max_warn") or 3)
+
+
+def punish_view(gid, g, idx):
+    key = LOCK_KEYS[idx]
+    warn, ban, maximum = _lock_warn(g, key), _lock_ban(g, key), _lock_max(g, key)
+    text = (
+        f"⚖️ مجازات قفل «{TITLES[key]}» در «{_title(gid, g)}»\n"
+        f"• اخطار: {'روشن' if warn else 'خاموش'}\n"
+        f"• حذف کاربر پس از سقف اخطار: {'روشن' if ban else 'خاموش'}\n"
+        f"• سقف اخطار: {_fa(maximum)}\n\n"
+        "اگر اخطار خاموش باشد، فقط پیام حذف می‌شود."
+    )
+    rows = [
+        [{"text": f"اخطار: {'✅' if warn else '❌'}", "callback_data": f"PW:{gid}:{idx}"}],
+        [{"text": f"حذف کاربر: {'✅' if ban else '❌'}", "callback_data": f"PB:{gid}:{idx}"}],
+        [{"text": f"سقف اخطار: {_fa(maximum)} (تغییر)", "callback_data": f"PM:{gid}:{idx}"}],
+        [{"text": "🔙 بازگشت به قفل‌ها", "callback_data": f"L:{gid}"}],
+    ]
+    return text, {"inline_keyboard": rows}
+
+
 def locks_view(gid, g):
     locks = g.get("locks") or {}
     on = sum(1 for key in LOCK_KEYS if locks.get(key))
@@ -90,13 +128,12 @@ def locks_view(gid, g):
         "🔴 قفل است • 🟢 باز است\nبرای تغییر، روی هر مورد بزنید."
     )
     rows = []
-    for start in range(0, len(LOCK_KEYS), 2):
-        row = []
-        for idx in range(start, min(start + 2, len(LOCK_KEYS))):
-            key = LOCK_KEYS[idx]
-            mark = "🔴" if locks.get(key) else "🟢"
-            row.append({"text": f"{mark} {TITLES[key]}", "callback_data": f"T:{gid}:{idx}"})
-        rows.append(row)
+    for idx, key in enumerate(LOCK_KEYS):
+        mark = "🔴" if locks.get(key) else "🟢"
+        rows.append([
+            {"text": f"{mark} {TITLES[key]}", "callback_data": f"T:{gid}:{idx}"},
+            {"text": "⚖️", "callback_data": f"P:{gid}:{idx}"},
+        ])
     rows.append([{"text": "🔙 بازگشت", "callback_data": f"g:{gid}"}])
     return text, {"inline_keyboard": rows}
 
@@ -173,7 +210,7 @@ class PanelBot:
         if chat.get("type") != "private":
             return
         uid = str((msg.get("from") or {}).get("id") or "")
-        if not uid:
+        if not uid or _silenced(uid):
             return
         await self._show_home(chat.get("id") or uid, uid)
 
@@ -181,6 +218,8 @@ class PanelBot:
         cq_id = cq.get("id")
         frm = cq.get("from") or {}
         uid = str(frm.get("id") or "")
+        if _silenced(uid):
+            return
         msg = cq.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id") or frm.get("id")
         message_id = msg.get("message_id")
@@ -219,6 +258,24 @@ class PanelBot:
                 ok = await self._unban(gid, g, parts[2])
                 await self._ack(cq_id, "بن برداشته شد ✅" if ok else "رفع بن انجام نشد.", alert=not ok)
                 await self._send_or_edit(chat_id, message_id, *bans_view(gid, g))
+            elif action in ("P", "PW", "PB", "PM"):
+                idx = int(parts[2])
+                if not 0 <= idx < len(LOCK_KEYS):
+                    raise ValueError("lock index out of range")
+                key = LOCK_KEYS[idx]
+                if action == "PW":
+                    g.setdefault("lock_warn", {})[key] = not _lock_warn(g, key)
+                    db.save("groups")
+                elif action == "PB":
+                    g.setdefault("lock_ban", {})[key] = not _lock_ban(g, key)
+                    db.save("groups")
+                elif action == "PM":
+                    current = _lock_max(g, key)
+                    nxt = next((step for step in MAX_STEPS if step > current), MAX_STEPS[0])
+                    g.setdefault("lock_max_warn", {})[key] = nxt
+                    db.save("groups")
+                await self._ack(cq_id, "ثبت شد ✅" if action != "P" else None)
+                await self._send_or_edit(chat_id, message_id, *punish_view(gid, g, idx))
             else:
                 await self._ack(cq_id, "دستور نامعتبر است.")
         except (IndexError, ValueError):
