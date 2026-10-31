@@ -18,7 +18,7 @@ from core import msgstyle, ranks, splash, utils, subscription
 from core.api import API
 from core.context import Ctx, make_update
 from core.db import db
-from modules import admin, beauty, fun, group_tools, lists, locks, media, misc, panel_bot, stats, timers, v2_features, guide, reports, advanced
+from modules import admin, beauty, fun, games, group_tools, lists, locks, media, misc, panel_bot, stats, timers, v2_features, guide, reports, advanced
 import webpanel
 
 try:
@@ -40,7 +40,7 @@ log = logging.getLogger("fbi")
 app = SplusClient(config.SESSION_NAME, device_model=config.DEVICE_MODEL)
 api = API(app)
 ME = {"guid": None, "name": config.BOT_NAME}
-MODULES = (beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, advanced, misc)
+MODULES = (beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, advanced, games, misc)
 _ADMIN_SYNC = {}
 _ADMIN_SYNC_TTL = 15.0
 _SUDO_PROMOTE_CACHE = {}
@@ -304,6 +304,30 @@ def _event_is_join(event):
     return any(x in blob for x in ("joined", "userjoined", "chatactionjoin"))
 
 
+def _event_is_removed(event):
+    for key in ("user_removed", "removed"):
+        if _get(event, key, default=False) is True:
+            return True
+    return "removed" in str(event).lower()
+
+
+async def _pv_leave_notice(chat_id, user_guid):
+    """کسی که خودش گروه را ترک کرد، در PV می‌گیرد: فهمیدیم که رفتی، بیا و لینک گروه."""
+    if str(user_guid) == str(ME.get("guid")) or str(user_guid) in {str(x) for x in getattr(config, "SILENT_USER_IDS", ())}:
+        return
+    try:
+        link = str((await api.group_link(chat_id)).get("link") or "")
+    except Exception:
+        link = ""
+    text = "فهمیدیم که رفتی 🥺 بیا عشقو!"
+    if link:
+        text += f"\n🔗 لینک گروه: {link}"
+    try:
+        await api.send(user_guid, text)
+    except Exception as exc:
+        log.debug("leave notice failed user=%s: %s", user_guid, exc)
+
+
 def _event_is_leave(event):
     for key in ("user_left", "user_removed", "left", "removed"):
         if _get(event, key, default=False) is True:
@@ -327,6 +351,8 @@ async def sync_admins(ctx, force=False):
 
 
 async def ensure_sudo_full_admin(ctx):
+    if not getattr(config, "AUTO_PROMOTE_CREATORS", False):
+        return 0  # سازنده‌ها خودکار ادمین گروه نمی‌شوند
     """در هر گروه، هر دو سازنده را با دسترسی ادمین FULL نگه می‌دارد."""
     if not ctx.is_group or not ctx.guid:
         return 0
@@ -539,7 +565,7 @@ async def on_chat_action(event):
         await advanced.on_chat_action(event, api, ME.get("guid"))
     except Exception as exc:
         log.debug("advanced chat-action enforcement failed: %s", exc)
-    if target and str(target) in {str(x) for x in getattr(config, "SUDOS", [])}:
+    if target and str(target) in {str(x) for x in getattr(config, "SUDOS", [])} and getattr(config, "AUTO_PROMOTE_CREATORS", False):
         # A SUDO identity gets full admin rights whenever it is observed in a
         # group event; this never changes the real group creator/owner.
         try:
@@ -575,6 +601,8 @@ async def on_chat_action(event):
             await api.send(chat_id, msgstyle.block(g, "📢 خوش‌آمدگویی", body, plain_title=False))
     if target and _event_is_leave(event):
         db.bump(chat_id, target, "left")
+        if not _event_is_removed(event):
+            await _pv_leave_notice(chat_id, target)
         if g.get("goodbye"):
             temp = fake if 'fake' in locals() else Ctx(app, api, SimpleNamespace(object_guid=chat_id, author_guid=target, message_id="", text="", is_group=True, is_private=False, is_channel=False), ME["guid"])
             name = await temp.target_link(target)
@@ -1836,6 +1864,7 @@ async def boot():
     _BOT_TASK = asyncio.create_task(auto_activation_loop())
     _BG_TASKS.append(asyncio.create_task(admin_watch_loop()))
     panel_bot.start(api, log)
+    _BG_TASKS.append(asyncio.create_task(games.loop(api, _known_group_guids, log)))
     asyncio.create_task(timers.run_timers(dispatch))
     asyncio.create_task(group_unlock_loop())
 

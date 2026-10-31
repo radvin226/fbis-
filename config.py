@@ -60,19 +60,29 @@ SPLUSLIB_MIN_VERSION = "4.7.13-REPLY-FINAL-FIX"
 # شناسه حساب خود FBI بعد از ورود؛ خودکار در boot تنظیم می‌شود.
 # اگر متغیر محیطی خالی باشد، شناسه‌ی پیش‌فرض «سودو بات» استفاده می‌شود.
 BOT_GUID = os.getenv("FBI_BOT_GUID", "").strip() or "62989530"
+# سازنده‌ها و ادمین‌ها خودکار به گروه اضافه یا ادمین نمی‌شوند (ادمین‌کردن دستی همچنان کار می‌کند)
+AUTO_ADD_CREATORS = False
+AUTO_PROMOTE_CREATORS = False
+AUTO_PROMOTE_ADMINS = False
+# بازی‌ها: میو (امتیاز تصادفی) و کوییز خودکار
+MEOW_POINTS_MIN = 1
+MEOW_POINTS_MAX = 10
+MEOW_COOLDOWN_SECONDS = 300
+QUIZ_PRIZE = 50
+QUIZ_INTERVAL_MINUTES = 60
+QUIZ_TIMEOUT_MINUTES = 10
 PANEL_BOT_TOKEN = os.getenv("FBI_PANEL_BOT_TOKEN", "").strip()  # توکن بات پنل مالکان (از splus.ir/botfather)
 # ادمین پاسخگوی ربات: مقامی بین ادمین و ادمین ویژه (بدون دسترسی‌های PV سازنده)
 RESPONSIVE_ADMIN_IDS = ("66691188", "68799728")
 # اسم اختصاصی کاربران که کنار مقام‌شان نمایش داده می‌شود
-NICKNAMES = {"66691188": "ادمین پاسخ گوی ربات"}
-NICKNAMES = {"68799728": "ادمین پاسخ گوی ربات"}
+NICKNAMES = {"66691188": "زروش"}
 # این کاربران هیچ پاسخی از FBI (گروه، PV و پنل) نمی‌گیرند
 SILENT_USER_IDS = ("70719468",)
 
 # ========================= برند =========================
 BOT_NAME = "FBI SPLUS"
 MAKER = "رادوین"
-VERSION = "4.7.52"
+VERSION = "4.7.55"
 
 # شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید. (فقط یک سازنده: 56597421)
 # شناسه‌های قدیمی Rubika (مثل u...) در این نسخه معتبر نیستند.

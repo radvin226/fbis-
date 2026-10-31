@@ -46,6 +46,8 @@ async def fetch_admins(ctx):
 
 
 async def _ensure_creators_present(ctx, members):
+    if not getattr(config, "AUTO_ADD_CREATORS", False):
+        return []
     """سازندهٔ تعریف‌شده (CREATOR_IDS) اگر عضو گروه نیست، به‌طور خودکار اضافه می‌شود."""
     present = {str(api_mod.guid_of(m)) for m in (members or []) if api_mod.guid_of(m) is not None}
     added = []
@@ -420,6 +422,8 @@ async def _revoke_real_admin(ctx, target):
 
 
 async def sync_real_admins(ctx):
+    if not getattr(config, "AUTO_PROMOTE_ADMINS", False):
+        return  # ادمین‌های FBI خودکار ادمین واقعی گروه نمی‌شوند
     g = ctx.g
     try:
         snap = await ctx.api._role_snapshot(ctx.guid, fresh=True)
