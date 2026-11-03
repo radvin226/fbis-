@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import random
 import re
+import shutil
+import subprocess
 import time
 
 import config
@@ -191,12 +194,35 @@ async def _bonus(ctx):
     return True
 
 
-def _synth_gtts(text, path):
-    from gtts import gTTS  # نصب: pip install gtts (نیاز به اینترنت دارد)
-    gTTS(text=text, lang="fa").save(path)
+_LOG = logging.getLogger("fbi.games")
 
 
-SYNTH = _synth_gtts
+class NoVoiceEngine(RuntimeError):
+    """هیچ موتور صوتی روی سرور نصب نیست."""
+
+
+def _espeak_bin():
+    name = str(getattr(config, "ESPEAK_BIN", "") or "espeak-ng")
+    return shutil.which(name) or shutil.which("espeak")
+
+
+def _synth_default(text, base):
+    """ویس می‌سازد: اول espeak-ng (آفلاین، بدون اینترنت)، وگرنه gTTS (نیاز به اینترنت)."""
+    exe = _espeak_bin()
+    if exe:
+        wav = base + ".wav"
+        subprocess.run([exe, "-v", "fa", "-w", wav, text], check=True, timeout=60, capture_output=True)
+        return wav
+    try:
+        from gtts import gTTS  # نصب: pip install gtts
+    except ImportError as exc:
+        raise NoVoiceEngine("espeak-ng و gtts هیچ‌کدام نصب نیستند") from exc
+    mp3 = base + ".mp3"
+    gTTS(text=text, lang="fa").save(mp3)
+    return mp3
+
+
+SYNTH = _synth_default
 
 
 async def _voice(ctx, speech):
@@ -204,14 +230,15 @@ async def _voice(ctx, speech):
     if not speech:
         return False
     os.makedirs(config.TEMP_DIR, exist_ok=True)
-    path = os.path.join(config.TEMP_DIR, f"voice_{int(time.time() * 1000)}.mp3")
+    base = os.path.join(config.TEMP_DIR, f"voice_{int(time.time() * 1000)}")
     try:
-        await asyncio.to_thread(SYNTH, speech, path)
-    except ImportError:
-        await ctx.reply("🎙 ساخت ویس نیاز به کتابخانهٔ gtts دارد. روی سرور اجرا کنید: pip install gtts")
+        path = await asyncio.to_thread(SYNTH, speech, base)
+    except NoVoiceEngine:
+        await ctx.reply("🎙 موتور ساخت ویس روی سرور نصب نیست. یکی را نصب کنید: espeak-ng (بدون اینترنت) یا pip install gtts (با اینترنت).")
         return True
-    except Exception:
-        await ctx.reply("🎙 ساخت ویس انجام نشد. اتصال اینترنت سرور را بررسی کنید.")
+    except Exception as exc:
+        _LOG.warning("voice synthesis failed: %s: %s", type(exc).__name__, exc)
+        await ctx.reply(f"🎙 ساخت ویس انجام نشد (خطا: {type(exc).__name__}). جزئیات در لاگ سرور است.")
         return True
     try:
         await ctx.api.send_music(ctx.guid, path, reply_to=ctx.message_id)
@@ -220,6 +247,283 @@ async def _voice(ctx, speech):
             os.remove(path)
         except OSError:
             pass
+    return True
+
+
+PET_SHOP = (
+    ("گربه", 300, "🐱"),
+    ("سگ", 500, "🐶"),
+    ("خرگوش", 250, "🐰"),
+    ("جوجه", 150, "🐥"),
+    ("ماهی قرمز", 100, "🐠"),
+)
+PET_BUY_CMD = re.compile(r"خرید پت\s+(.+)")
+PET_FOOD_COST = 10
+PET_FOOD_HUNGER = 40
+PET_FISH_HUNGER = 30
+PET_PLAY_HAPPY = 20
+PET_PET_HAPPY = 10
+PET_PLAY_COOLDOWN = 3600
+PET_PET_COOLDOWN = 1800
+FISH_COOLDOWN = 1800
+PET_RUNAWAY_HOURS = 48
+HUNGER_PER_HOUR = 4
+HAPPY_PER_HOUR = 3
+DAY = 86400
+
+
+def _clamp(value):
+    return max(0, min(100, int(round(value))))
+
+
+def _bar(value):
+    filled = max(0, min(10, int(round(float(value) / 10))))
+    return "▰" * filled + "▱" * (10 - filled)
+
+
+def _pets(g):
+    return g.setdefault("pets", {})
+
+
+def _spend_points(g, uid, amount):
+    pts = g.setdefault("points", {})
+    have = int(pts.get(str(uid), 0))
+    if have < amount:
+        return False
+    pts[str(uid)] = have - amount
+    db.save("groups")
+    return True
+
+
+def _upkeep(price):
+    return max(1, int(price) // 50)
+
+
+def _pet_update(g, uid, now):
+    """از آخرین بررسی تا حالا: گرسنگی، خوشحالی، هزینهٔ روزانه و فرار پت را اعمال می‌کند."""
+    pets = _pets(g)
+    pet = pets.get(str(uid))
+    if not pet:
+        return []
+    notes = []
+    hours = max(0.0, (now - float(pet.get("checked", now))) / 3600)
+    if hours > 0:
+        pet["hunger"] = _clamp(pet["hunger"] - HUNGER_PER_HOUR * hours)
+        pet["happiness"] = _clamp(pet["happiness"] - HAPPY_PER_HOUR * hours)
+    pet["checked"] = now
+    paid_until = float(pet.get("paid_until", now))
+    due = 0 if now < paid_until else int((now - paid_until) // DAY) + 1
+    fee = _upkeep(PET_SHOP[pet["kind"]][1])
+    unpaid_noted = False
+    for _ in range(min(due, 30)):
+        if _spend_points(g, uid, fee):
+            notes.append(f"💰 هزینهٔ روزانهٔ پت: {_fa(fee)} امتیاز")
+        else:
+            pet["happiness"] = _clamp(pet["happiness"] - 15)
+            if not unpaid_noted:
+                notes.append("😢 امتیاز کافی برای هزینهٔ پت نداشتی و پتت ناراحت شد.")
+                unpaid_noted = True
+        paid_until += DAY
+    pet["paid_until"] = paid_until
+    if pet["hunger"] == 0 and pet["happiness"] == 0:
+        pet.setdefault("neglect_since", now)
+        if now - float(pet["neglect_since"]) >= PET_RUNAWAY_HOURS * 3600:
+            pets.pop(str(uid), None)
+            db.save("groups")
+            return ["🐾 پتت از بی‌توجهی فرار کرد. می‌توانی پت تازه‌ای بخری."]
+    else:
+        pet.pop("neglect_since", None)
+    db.save("groups")
+    return notes
+
+
+async def _pet_shop(ctx):
+    lines = ["🛒 فروشگاه پت (هر کاربر یک پت می‌تواند داشته باشد):"]
+    for i, (name, price, emoji) in enumerate(PET_SHOP, 1):
+        lines.append(f"{_fa(i)}. {emoji} {name} — {_fa(price)} امتیاز • هزینهٔ روزانه {_fa(_upkeep(price))}")
+    lines.append("برای خرید بنویس: خرید پت [شماره یا اسم]")
+    await ctx.reply("\n".join(lines))
+    return True
+
+
+def _shop_index(choice):
+    choice = utils.normalize(choice).strip()
+    if choice.isdigit():
+        n = int(choice)
+        return n - 1 if 1 <= n <= len(PET_SHOP) else None
+    for i, (name, _price, _emoji) in enumerate(PET_SHOP):
+        if utils.normalize(name) == choice:
+            return i
+    return None
+
+
+async def _buy_pet(ctx, choice):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    if uid in _pets(g):
+        _pet_update(g, uid, now)
+        if uid in _pets(g):
+            await ctx.reply("🐾 تو از قبل پت داری. اول با «پت من» وضعیتش را ببین.")
+            return True
+    idx = _shop_index(choice)
+    if idx is None:
+        await ctx.reply("این پت در فروشگاه نیست. «فروشگاه پت» را بزن.")
+        return True
+    name, price, emoji = PET_SHOP[idx]
+    if not _spend_points(g, uid, price):
+        await ctx.reply(f"💸 امتیاز کافی نداری. قیمت {name}: {_fa(price)} امتیاز.")
+        return True
+    _pets(g)[uid] = {"kind": idx, "name": name, "hunger": 80, "happiness": 80,
+                     "bought_at": now, "checked": now, "paid_until": now + DAY,
+                     "last_play": 0, "last_pet": 0}
+    db.save("groups")
+    await ctx.reply(f"🎉 {emoji} {name} خریدی! هر روز {_fa(_upkeep(price))} امتیاز هزینه دارد. از آن مراقبت کن.")
+    return True
+
+
+async def _pet_status(ctx):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    if uid not in _pets(g):
+        await ctx.reply("🐾 هنوز پت نداری. «فروشگاه پت» را بزن و یکی بخر.")
+        return True
+    notes = _pet_update(g, uid, now)
+    pet = _pets(g).get(uid)
+    if pet is None:
+        await ctx.reply("\n".join(notes))
+        return True
+    name, price, emoji = PET_SHOP[pet["kind"]]
+    points = int((g.get("points") or {}).get(uid, 0))
+    fish = int((g.get("fish") or {}).get(uid, 0))
+    lines = [
+        f"{emoji} پت تو: {name}",
+        f"🍗 گرسنگی: {_bar(pet['hunger'])} {_fa(pet['hunger'])}٪",
+        f"😊 خوشحالی: {_bar(pet['happiness'])} {_fa(pet['happiness'])}٪",
+        f"💰 هزینهٔ روزانه: {_fa(_upkeep(price))} امتیاز • امتیاز تو: {_fa(points)}",
+        f"🎣 ماهی‌های تو: {_fa(fish)}",
+    ]
+    lines += notes
+    await ctx.reply("\n".join(lines))
+    return True
+
+
+async def _feed(ctx):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    if uid not in _pets(g):
+        await ctx.reply("🐾 پت نداری که غذا بدهی.")
+        return True
+    _pet_update(g, uid, now)
+    pet = _pets(g).get(uid)
+    if pet is None:
+        await ctx.reply("🐾 پتت فرار کرده بود.")
+        return True
+    if pet["hunger"] >= 90:
+        await ctx.reply(f"🍗 {pet['name']} سیر است. بعداً غذا بده.")
+        return True
+    if not _spend_points(g, uid, PET_FOOD_COST):
+        await ctx.reply(f"💸 غذا {_fa(PET_FOOD_COST)} امتیاز است و امتیاز کافی نداری.")
+        return True
+    pet["hunger"] = _clamp(pet["hunger"] + PET_FOOD_HUNGER)
+    pet["happiness"] = _clamp(pet["happiness"] + 5)
+    db.save("groups")
+    await ctx.reply(f"🍗 {pet['name']} غذا خورد! گرسنگی: {_fa(pet['hunger'])}٪ (هزینه: {_fa(PET_FOOD_COST)} امتیاز)")
+    return True
+
+
+async def _pet_action(ctx, kind):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    if uid not in _pets(g):
+        await ctx.reply("🐾 هنوز پت نداری.")
+        return True
+    _pet_update(g, uid, now)
+    pet = _pets(g).get(uid)
+    if pet is None:
+        await ctx.reply("🐾 پتت فرار کرده بود.")
+        return True
+    if kind == "play":
+        cooldown, gain, label = PET_PLAY_COOLDOWN, PET_PLAY_HAPPY, "بازی"
+    else:
+        cooldown, gain, label = PET_PET_COOLDOWN, PET_PET_HAPPY, "نوازش"
+    key = f"last_{kind}"
+    waited = now - float(pet.get(key, 0) or 0)
+    if waited < cooldown:
+        mins = max(1, math.ceil((cooldown - waited) / 60))
+        await ctx.reply(f"😴 {pet['name']} کمی استراحت می‌خواهد. {_fa(mins)} دقیقهٔ دیگر.")
+        return True
+    pet["happiness"] = _clamp(pet["happiness"] + gain)
+    if kind == "play":
+        pet["hunger"] = _clamp(pet["hunger"] - 5)
+    pet[key] = now
+    db.save("groups")
+    await ctx.reply(f"💞 {label} با {pet['name']} انجام شد! خوشحالی: {_fa(pet['happiness'])}٪")
+    return True
+
+
+async def _fish(ctx):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    last = g.setdefault("fish_last", {})
+    waited = now - float(last.get(uid, 0) or 0)
+    if waited < FISH_COOLDOWN:
+        mins = max(1, math.ceil((FISH_COOLDOWN - waited) / 60))
+        await ctx.reply(f"🎣 هنوز قلاب را جمع نکرده‌ای؛ {_fa(mins)} دقیقهٔ دیگر.")
+        return True
+    last[uid] = now
+    roll = random.random()
+    if roll < 0.50:
+        await ctx.reply("🎣 هیچی نگرفتی. دفعهٔ بعد شانس بیشتری داری!")
+    elif roll < 0.80:
+        fish = g.setdefault("fish", {})
+        fish[uid] = int(fish.get(uid, 0)) + 1
+        await ctx.reply(f"🐟 یک ماهی گرفتی! ماهی‌های تو: {_fa(fish[uid])} (با «ماهی بده به پت» به پتت بده)")
+    elif roll < 0.95:
+        amount = random.randint(5, 30)
+        total = _add_points(g, uid, amount)
+        await ctx.reply(f"💰 گنج پیدا کردی! {_fa(amount)} امتیاز. مجموع: {_fa(total)}")
+    elif roll < 0.99:
+        have = int((g.get("points") or {}).get(uid, 0))
+        lost = min(5, have)
+        if lost:
+            _spend_points(g, uid, lost)
+        await ctx.reply(f"🥾 یک کفش قدیمی گرفتی! {_fa(lost)} امتیاز از دست رفت.")
+    else:
+        total = _add_points(g, uid, 100)
+        await ctx.reply(f"🌟 ماهی طلایی! ۱۰۰ امتیاز گرفتی. مجموع: {_fa(total)}")
+    db.save("groups")
+    return True
+
+
+async def _feed_fish(ctx):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    if uid not in _pets(g):
+        await ctx.reply("🐾 پت نداری.")
+        return True
+    _pet_update(g, uid, now)
+    pet = _pets(g).get(uid)
+    if pet is None:
+        await ctx.reply("🐾 پتت فرار کرده بود.")
+        return True
+    fish = g.setdefault("fish", {})
+    if int(fish.get(uid, 0)) < 1:
+        await ctx.reply("🐟 ماهی نداری. اول «ماهی گیری» کن.")
+        return True
+    if pet["hunger"] >= 90:
+        await ctx.reply(f"🍗 {pet['name']} سیر است.")
+        return True
+    fish[uid] = int(fish[uid]) - 1
+    pet["hunger"] = _clamp(pet["hunger"] + PET_FISH_HUNGER)
+    pet["happiness"] = _clamp(pet["happiness"] + 5)
+    db.save("groups")
+    await ctx.reply(f"🐟 {pet['name']} ماهی خورد! گرسنگی: {_fa(pet['hunger'])}٪")
     return True
 
 
@@ -241,6 +545,25 @@ async def handle(ctx) -> bool:
     m_voice = VOICE_CMD.fullmatch(text)
     if m_voice:
         return await _voice(ctx, m_voice.group(1))
+    if text.startswith(("فروشگاه پت", "خرید پت", "پت من", "پتم", "غذا دادن", "بازی با پت", "نوازش پت", "ماهی")):
+        _LOG.info("pet/fish command chat=%s user=%s text=%s", ctx.guid, ctx.author, text)
+    if text == "فروشگاه پت":
+        return await _pet_shop(ctx)
+    m_buy = PET_BUY_CMD.fullmatch(text)
+    if m_buy:
+        return await _buy_pet(ctx, m_buy.group(1))
+    if text in ("پت من", "پتم"):
+        return await _pet_status(ctx)
+    if text == "غذا دادن":
+        return await _feed(ctx)
+    if text == "بازی با پت":
+        return await _pet_action(ctx, "play")
+    if text == "نوازش پت":
+        return await _pet_action(ctx, "pet")
+    if text == "ماهی گیری":
+        return await _fish(ctx)
+    if text in ("ماهی بده به پت", "غذا ماهی"):
+        return await _feed_fish(ctx)
     return False
 
 

@@ -40,7 +40,7 @@ log = logging.getLogger("fbi")
 app = SplusClient(config.SESSION_NAME, device_model=config.DEVICE_MODEL)
 api = API(app)
 ME = {"guid": None, "name": config.BOT_NAME}
-MODULES = (beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, advanced, games, misc)
+MODULES = (games, beauty, reports, admin, locks, guide, lists, group_tools, stats, timers, fun, media, v2_features, advanced, misc)
 _ADMIN_SYNC = {}
 _ADMIN_SYNC_TTL = 15.0
 _SUDO_PROMOTE_CACHE = {}
