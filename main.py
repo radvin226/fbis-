@@ -1000,7 +1000,7 @@ FORCE_JOIN_TEXT = (
     "گروه حل مشکلات؛ https://splus.ir/Fbibotgrup\n"
     f"پشتیبانی:{config.FORCE_JOIN_SUPPORT}\n"
     "اطلاع رسانی: https://splus.ir/FBIbotdd\n\n"
-    "بعد از عضو شدن، بنویسید: عضو شدم"
+    "بعد از عضو شدن، بنویسید: `عضو شدم`"
 )
 
 
@@ -1281,7 +1281,7 @@ def _campaign_message(guids, groups):
         f"گروه حل مشکلات: {CAMPAIGN_JOIN_LINKS[0]}",
         f"اطلاع‌رسانی: {CAMPAIGN_JOIN_LINKS[1]}",
         "",
-        "⏳ پس از عضویت، روی همین پیام ریپلای بزنید و بنویسید: عضو شدم",
+        "⏳ پس از عضویت، روی همین پیام ریپلای بزنید و بنویسید: `عضو شدم`",
         "⚠️ اگر تا پایان مهلت عضو نشوید، FBI در گروه(های) شما غیرفعال می‌شود.",
     ]
     return "\n".join(lines)

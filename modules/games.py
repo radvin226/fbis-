@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import random
 import re
 import time
@@ -115,13 +116,14 @@ async def _my_points(ctx):
 
 async def _leaderboard(ctx):
     pts = ctx.g.get("points") or {}
-    top = sorted(((uid, n) for uid, n in pts.items() if n > 0), key=lambda item: (-item[1], str(item[0])))[:10]
+    top = top_points(ctx.g, 10)
     if not top:
         await ctx.reply("هنوز کسی امتیاز نگرفته است. «میو» بگو یا منتظر کوییز بعدی باش 🎯")
         return True
     lines = ["🏆 جدول امتیاز گروه"]
     for i, (uid, n) in enumerate(top, 1):
-        lines.append(f"{_fa(i)}. {uid} — {_fa(n)} امتیاز")
+        name = await ctx.target_link(uid)
+        lines.append(f"{_fa(i)}. {name} — {_fa(n)} امتیاز")
     await ctx.reply("\n".join(lines))
     return True
 
@@ -153,6 +155,74 @@ async def _give_points(ctx):
     return True
 
 
+TITLE_STEPS = ((0, "تازه‌وارد"), (50, "فعال"), (150, "ستاره"), (400, "افسانه"), (1000, "اسطوره"))
+VOICE_CMD = re.compile(r"ویس\s+(?!قفل)(.+)")
+
+
+def title_for(points):
+    label = TITLE_STEPS[0][1]
+    for threshold, name in TITLE_STEPS:
+        if int(points or 0) >= threshold:
+            label = name
+    return label
+
+
+def top_points(g, n=5):
+    pts = g.get("points") or {}
+    rows = [(uid, int(v)) for uid, v in pts.items() if int(v or 0) > 0]
+    return sorted(rows, key=lambda item: (-item[1], str(item[0])))[:n]
+
+
+async def _bonus(ctx):
+    g = ctx.g
+    uid = str(ctx.author)
+    now = time.time()
+    last = g.setdefault("bonus_last", {})
+    period = int(getattr(config, "BONUS_COOLDOWN_HOURS", 24)) * 3600
+    waited = now - float(last.get(uid, 0) or 0)
+    if waited < period:
+        left_h = max(1, math.ceil((period - waited) / 3600))
+        await ctx.reply(f"🎁 بونوس امروزت را گرفته‌ای. {_fa(left_h)} ساعت دیگر دوباره بیا.")
+        return True
+    amount = int(getattr(config, "BONUS_POINTS", 20))
+    last[uid] = now
+    total = _add_points(g, uid, amount)
+    await ctx.reply(f"🎁 بونوس روزانه! {_fa(amount)} امتیاز گرفتی. مجموع: {_fa(total)} • عنوان: {title_for(total)}")
+    return True
+
+
+def _synth_gtts(text, path):
+    from gtts import gTTS  # نصب: pip install gtts (نیاز به اینترنت دارد)
+    gTTS(text=text, lang="fa").save(path)
+
+
+SYNTH = _synth_gtts
+
+
+async def _voice(ctx, speech):
+    speech = speech.strip()[:int(getattr(config, "VOICE_MAX_CHARS", 200))]
+    if not speech:
+        return False
+    os.makedirs(config.TEMP_DIR, exist_ok=True)
+    path = os.path.join(config.TEMP_DIR, f"voice_{int(time.time() * 1000)}.mp3")
+    try:
+        await asyncio.to_thread(SYNTH, speech, path)
+    except ImportError:
+        await ctx.reply("🎙 ساخت ویس نیاز به کتابخانهٔ gtts دارد. روی سرور اجرا کنید: pip install gtts")
+        return True
+    except Exception:
+        await ctx.reply("🎙 ساخت ویس انجام نشد. اتصال اینترنت سرور را بررسی کنید.")
+        return True
+    try:
+        await ctx.api.send_music(ctx.guid, path, reply_to=ctx.message_id)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return True
+
+
 async def handle(ctx) -> bool:
     if not getattr(ctx, "is_group", False) or not ctx.author or not ctx.guid:
         return False
@@ -166,6 +236,11 @@ async def handle(ctx) -> bool:
         return await _my_points(ctx)
     if text in ("جدول امتیاز", "جدول امتیازها"):
         return await _leaderboard(ctx)
+    if text == "بونوس":
+        return await _bonus(ctx)
+    m_voice = VOICE_CMD.fullmatch(text)
+    if m_voice:
+        return await _voice(ctx, m_voice.group(1))
     return False
 
 

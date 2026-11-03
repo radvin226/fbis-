@@ -51,11 +51,13 @@ async def handle(ctx) -> bool:
         if ctx.rank < ranks.ADMIN:
             return await _deny(ctx)
         await _group_stat(ctx, 0, "آمار کلی گروه")
+        await _points_board(ctx)
         return True
     if text in ("آمار هفتگی", "امار هفتگی"):
         if ctx.rank < ranks.ADMIN:
             return await _deny(ctx)
         await _group_stat(ctx, 7, "آمار هفتگی گروه")
+        await _points_board(ctx)
         return True
     if text == "اسکن همه":
         if ctx.rank < ranks.ADMIN:
@@ -184,6 +186,9 @@ async def _user_stat(ctx, guid):
     link = await ctx.target_link(guid, fallback_name=name)
     level = ranks.name(ranks.rank(ctx.guid, guid))
     warns = ctx.g.get("warns", {}).get(guid, 0)
+    from modules.games import title_for
+    points = (ctx.g.get("points") or {}).get(guid, 0)
+    title = title_for(points)
     week = sum(st.get("week", {}).values())
     caption = "\n".join([
         f"📊 پروفایل و آمار {link}", "",
@@ -191,6 +196,7 @@ async def _user_stat(ctx, guid):
         f"👤 نام کاربری: @{str(username).lstrip('@')}" if username else "👤 نام کاربری: —",
         f"📝 بیو: {bio or '—'}",
         f"🎖 مقام: {level}",
+        f"🏆 امتیاز: {utils.fa_num(points)} • عنوان: {title}",
         f"🏷 لقب: {user.get('nick') or '—'}",
         f"🌿 اصل: {user.get('title') or '—'}", "",
         f"💬 کل پیام‌ها: {utils.fa_num(st.get('total', 0))}",
@@ -216,6 +222,19 @@ async def _user_stat(ctx, guid):
                 pass
     else:
         await ctx.reply(caption)
+
+
+async def _points_board(ctx):
+    """بالاترین امتیازهای گروه، زیر آمار گروه."""
+    from modules.games import title_for, top_points
+    rows = top_points(ctx.g, 5)
+    if not rows:
+        return
+    lines = ["🏆 برترین امتیازهای گروه:"]
+    for i, (uid, pts) in enumerate(rows, 1):
+        name = await ctx.target_link(uid)
+        lines.append(f"{utils.fa_digits(i)}. {name} — {utils.fa_num(pts)} امتیاز ({title_for(pts)})")
+    await ctx.reply("\n".join(lines))
 
 
 async def _avatar(ctx, guid):

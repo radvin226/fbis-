@@ -71,6 +71,9 @@ MEOW_COOLDOWN_SECONDS = 300
 QUIZ_PRIZE = 50
 QUIZ_INTERVAL_MINUTES = 60
 QUIZ_TIMEOUT_MINUTES = 10
+BONUS_POINTS = 20
+BONUS_COOLDOWN_HOURS = 24
+VOICE_MAX_CHARS = 200
 PANEL_BOT_TOKEN = os.getenv("FBI_PANEL_BOT_TOKEN", "").strip()  # توکن بات پنل مالکان (از splus.ir/botfather)
 # ادمین پاسخگوی ربات: مقامی بین ادمین و ادمین ویژه (بدون دسترسی‌های PV سازنده)
 RESPONSIVE_ADMIN_IDS = ("66691188", "68799728")
@@ -82,7 +85,7 @@ SILENT_USER_IDS = ("70719468",)
 # ========================= برند =========================
 BOT_NAME = "FBI SPLUS"
 MAKER = "رادوین"
-VERSION = "4.7.55"
+VERSION = "4.7.56"
 
 # شناسه‌های سازنده را با ID عددی حساب Splus خودتان پر کنید. (فقط یک سازنده: 56597421)
 # شناسه‌های قدیمی Rubika (مثل u...) در این نسخه معتبر نیستند.
