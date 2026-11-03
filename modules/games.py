@@ -10,6 +10,7 @@ import random
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 
 import config
@@ -225,23 +226,43 @@ def _synth_default(text, base):
 SYNTH = _synth_default
 
 
+def _temp_dir():
+    directory = str(getattr(config, "TEMP_DIR", "") or "") or tempfile.gettempdir()
+    try:
+        os.makedirs(directory, exist_ok=True)
+        return directory
+    except OSError:
+        return tempfile.gettempdir()
+
+
+def _voice_error(what, exc):
+    detail = " ".join(str(exc).split())[:120]
+    text = f"🎙 {what} ناموفق بود: {type(exc).__name__}"
+    return text + (f" — {detail}" if detail else "")
+
+
 async def _voice(ctx, speech):
     speech = speech.strip()[:int(getattr(config, "VOICE_MAX_CHARS", 200))]
     if not speech:
         return False
-    os.makedirs(config.TEMP_DIR, exist_ok=True)
-    base = os.path.join(config.TEMP_DIR, f"voice_{int(time.time() * 1000)}")
+    base = os.path.join(_temp_dir(), f"voice_{int(time.time() * 1000)}")
     try:
         path = await asyncio.to_thread(SYNTH, speech, base)
     except NoVoiceEngine:
         await ctx.reply("🎙 موتور ساخت ویس روی سرور نصب نیست. یکی را نصب کنید: espeak-ng (بدون اینترنت) یا pip install gtts (با اینترنت).")
         return True
     except Exception as exc:
-        _LOG.warning("voice synthesis failed: %s: %s", type(exc).__name__, exc)
-        await ctx.reply(f"🎙 ساخت ویس انجام نشد (خطا: {type(exc).__name__}). جزئیات در لاگ سرور است.")
+        _LOG.exception("voice synthesis failed")
+        await ctx.reply(_voice_error("ساخت ویس", exc))
         return True
     try:
-        await ctx.api.send_music(ctx.guid, path, reply_to=ctx.message_id)
+        sent = await ctx.api.send_music(ctx.guid, path, reply_to=ctx.message_id)
+        if sent is None:
+            _LOG.warning("voice send returned nothing chat=%s", ctx.guid)
+            await ctx.reply("🎙 ارسال ویس انجام نشد: سرور پاسخی نداد.")
+    except Exception as exc:
+        _LOG.exception("voice send failed")
+        await ctx.reply(_voice_error("ارسال ویس", exc))
     finally:
         try:
             os.remove(path)
