@@ -9,4 +9,4 @@ yt-dlp
 googlesearch-tool
 requests
 selenium
-gtts
+gtts>=2.5.0
